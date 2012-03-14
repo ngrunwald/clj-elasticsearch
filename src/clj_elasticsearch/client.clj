@@ -6,14 +6,15 @@
            [org.elasticsearch.action.admin.indices.status IndicesStatusRequest]
            [org.elasticsearch.common.io FastByteArrayOutputStream]
            [org.elasticsearch.client.transport TransportClient]
-           [org.elasticsearch.common.transport InetSocketTransportAddress]))
+           [org.elasticsearch.client.support AbstractClient]
+           [org.elasticsearch.common.transport InetSocketTransportAddress]
+           [org.elasticsearch.action  ActionListener]))
 
 (def ^{:dynamic true} *client*)
 
 (defn update-settings-builder
   ([builder settings]
      (doseq [[k v] settings]
-       (println k v)
        (if (or (vector? v) (list? v))
          (.putArray builder (name k) (into-array String (map str v)))
          (.put builder (name k) (str v))))
@@ -47,7 +48,6 @@
         _ (.find m)
         [_ host p] (re-groups m)
         port (if p (Integer/parseInt (str p)) 9300)]
-    (println host port)
     (InetSocketTransportAddress. host port)))
 
 (defn make-transport-client
@@ -73,15 +73,19 @@
     (XContentFactory/smileBuilder)))
 
 (defn convert-response
-  [response]
+  [response & [type]]
   (let [os (FastByteArrayOutputStream.)
-        builder (XContentFactory/smileBuilder os)
+        builder (if (= type :json)
+                  (XContentFactory/jsonBuilder os)
+                  (XContentFactory/smileBuilder os))
         funny-request (proxy [ToXContent$Params] [])]
     (.startObject builder)
     (.toXContent response builder funny-request)
     (.endObject builder)
     (.flush builder)
-    (json/decode-smile (.underlyingBytes os) true)))
+    (if (= type :json)
+      (.toString os "UTF-8")
+      (json/decode-smile (.underlyingBytes os) true))))
 
 (defn make-client
   [type spec]
@@ -110,7 +114,8 @@
     (.startObject builder)
     (doseq [[field value] doc]
       (.field builder (name field) value))
-    (.endObject builder)))
+    (.endObject builder)
+    builder))
 
 (defn get-index-admin-client
   [client]
@@ -134,7 +139,33 @@
          (.listenerThreaded threaded?))
        (if cb
          (.status i req cb)
-         (.actionGet (.status i req)))))
+         (convert-response (.actionGet (.status i req))))))
   ([args]
      (index-status *client* args)))
 
+(defn search
+  ([client {:keys [source from size indices types format threaded?]
+            :or {from 0 size 10 threaded? true}
+            :as req} cb]
+     (let [builder (.prepareSearch client (into-array (map name indices)))]
+       (doto builder
+           (.setExtraSource source)
+           (.setFrom from)
+           (.setSize size)
+           (.setListenerThreaded threaded?))
+       (if types (.setTypes builder (into-array (map name types))))
+       (if cb
+         (.execute builder cb)
+         (convert-response (.actionGet (.execute builder)) format))))
+  ([arg1 arg2]
+     (if (instance? AbstractClient arg1)
+       (search arg1 arg2 nil)
+       (search *client* arg1 arg2)))
+  ([req]
+     (search *client* req nil)))
+
+(defn make-listener
+  [{:keys [on-failure on-response]}]
+  (proxy [ActionListener] []
+    (onFailure [e] (on-failure e))
+    (onResponse [r] (on-response r))))
