@@ -1,5 +1,6 @@
 (ns clj-elasticsearch.client
-  (:require [cheshire.core :as json])
+  (:require [cheshire.core :as json]
+            [clojure.string :as str])
   (:import [org.elasticsearch.node NodeBuilder]
            [org.elasticsearch.common.xcontent XContentFactory ToXContent$Params]
            [org.elasticsearch.common.settings ImmutableSettings]
@@ -8,9 +9,14 @@
            [org.elasticsearch.client.transport TransportClient]
            [org.elasticsearch.client.support AbstractClient]
            [org.elasticsearch.common.transport InetSocketTransportAddress]
-           [org.elasticsearch.action  ActionListener]))
+           [org.elasticsearch.action  ActionListener]
+           [org.elasticsearch.common.xcontent ToXContent]))
 
 (def ^{:dynamic true} *client*)
+
+(defprotocol Clojurable
+  "Protocol for conversion of Response Classes to Clojure"
+  (convert [response format] "convert response to format"))
 
 (defn update-settings-builder
   ([builder settings]
@@ -72,8 +78,8 @@
     :smile (XContentFactory/smileBuilder)
     (XContentFactory/smileBuilder)))
 
-(defn convert-response
-  [response & [type]]
+(defn convert-xcontent
+  [response & [format]]
   (let [os (FastByteArrayOutputStream.)
         builder (if (= type :json)
                   (XContentFactory/jsonBuilder os)
@@ -86,6 +92,75 @@
     (if (= type :json)
       (.toString os "UTF-8")
       (json/decode-smile (.underlyingBytes os) true))))
+
+(defn method->arg
+  [method]
+  (let [name (.getName method)
+        parameter (first (seq (.getParameterTypes method)))
+        conv (str/replace name #"^set|get" "")
+        conv (str/lower-case (str/replace conv #"(\p{Lower})(\p{Upper})" "$1-$2"))
+        added (if (and parameter (= parameter java.lang.Boolean/TYPE)) (str conv "?") conv)]
+    added))
+
+(defmacro make-converter
+  [fn-name class-name]
+  (let [klass (Class/forName class-name)
+        methods (.getMethods klass)
+        getters-m  (filter #(let [n (.getName %)]
+                              (and (.startsWith n "get")
+                                   (not (#{"getClass" "getShardFailures"} n)))) methods)
+        sig (reduce (fn [acc m]
+                      (let [m-name (.getName m)]
+                        (assoc acc
+                          (keyword (method->arg m))
+                          (symbol (str "." m-name)))))
+                    {} getters-m)
+        response (gensym "response")]
+    `(defn ~fn-name
+       [~(with-meta response {:tag klass}) & [format#]]
+       (let [res# (hash-map
+                  ~@(apply concat
+                           (for [[kw getter] sig]
+                             `(~kw (~getter ~response)))))]
+         (if (= format# :json)
+           (json/generate-string res#)
+           res#)))))
+
+(defmacro def-converters
+  [& conv-defs]
+  `(do ~@(map (fn [conv-def]
+                `(make-converter ~@conv-def))
+              conv-defs)))
+
+(def-converters
+  (convert-count "org.elasticsearch.action.count.CountResponse")
+  (convert-delete "org.elasticsearch.action.delete.DeleteResponse")
+  (convert-delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryResponse")
+  (convert-index "org.elasticsearch.action.index.IndexResponse"))
+
+(extend-type org.elasticsearch.action.count.CountResponse
+  Clojurable
+  (convert [response format] (convert-count response format)))
+
+(extend-type org.elasticsearch.action.delete.DeleteResponse
+  Clojurable
+  (convert [response format] (convert-delete response format)))
+
+(extend-type org.elasticsearch.action.deletebyquery.DeleteByQueryResponse
+  Clojurable
+  (convert [response format] (convert-delete-by-query response format)))
+
+(extend-type org.elasticsearch.action.index.IndexResponse
+  Clojurable
+  (convert [response format] (convert-index response format)))
+
+(extend-type org.elasticsearch.action.count.CountResponse
+  Clojurable
+  (convert [response format] (convert-count response format)))
+
+(extend-type ToXContent
+  Clojurable
+  (convert [response format] (convert-xcontent response format)))
 
 (defn make-client
   [type spec]
@@ -125,44 +200,97 @@
   [client]
   (-> client (.admin) (.cluster)))
 
-(defn index-status
-  ([client {:keys [indices snapshot? threaded? recovery? cb]
-            :or {snapshot? false
-                 threaded? true
-                 recovery? false}}]
-     (let [i (get-index-admin-client client)
-           req (if indices (IndicesStatusRequest. (into-array (map name indices)))
-                   (IndicesStatusRequest.))]
-       (doto req
-         (.snapshot snapshot?)
-         (.recovery recovery?)
-         (.listenerThreaded threaded?))
-       (if cb
-         (.status i req cb)
-         (convert-response (.actionGet (.status i req))))))
-  ([args]
-     (index-status *client* args)))
+(defn is-settable-method?
+  [klass method]
+  (let [return (.getReturnType method)
+        parameters (.getParameterTypes method)
+        nb-params (alength parameters)]
+    (and (= return klass) (= nb-params 1))))
 
-(defn search
-  ([client {:keys [source from size indices types format threaded?]
-            :or {from 0 size 10 threaded? true}
-            :as req} cb]
-     (let [builder (.prepareSearch client (into-array (map name indices)))]
-       (doto builder
-           (.setExtraSource source)
-           (.setFrom from)
-           (.setSize size)
-           (.setListenerThreaded threaded?))
-       (if types (.setTypes builder (into-array (map name types))))
-       (if cb
-         (.execute builder cb)
-         (convert-response (.actionGet (.execute builder)) format))))
-  ([arg1 arg2]
-     (if (instance? AbstractClient arg1)
-       (search arg1 arg2 nil)
-       (search *client* arg1 arg2)))
-  ([req]
-     (search *client* req nil)))
+(defn is-execute-method?
+  [klass method]
+  (let [return (.getReturnType method)
+        parameters (into #{} (seq (.getParameterTypes method)))
+        nb-params (count parameters)]
+    (and (contains? parameters klass) (= nb-params 1))))
+
+(defn get-settable-methods
+  [class-name]
+  (let [klass (Class/forName class-name)
+        methods (.getMethods klass)
+        settable (filter #(is-settable-method? klass %) (seq methods))]
+    settable))
+
+(defn get-execute-method
+  [request-class-name client-class-name]
+  (let [c-klass (Class/forName client-class-name)
+        r-klass (Class/forName request-class-name)
+        methods (.getMethods c-klass)
+        executable (first (filter #(is-execute-method? r-klass %) (seq methods)))]
+    executable))
+
+(defn request-signature
+  [class-name]
+  (let [methods (get-settable-methods class-name)
+        args (map method->arg methods)]
+    (zipmap (map keyword args)
+            methods)))
+
+(defn acoerce
+  [val]
+  (if (or (vector? val) (list? val))
+    (into-array val)
+    val))
+
+(defmacro defn-request
+  [fn-name request-class-name cst-args client-class-name]
+  (let [r-klass (Class/forName request-class-name)
+        sig (request-signature request-class-name)
+        c-klass (Class/forName client-class-name)
+        method (get-execute-method request-class-name client-class-name)
+        response-klass (.getReturnType method)
+        response-type (cond
+                       (some #(=  %)
+                             (seq (.getInterfaces response-klass))) :xcontent
+                       :else :bean)
+        m-name (symbol (str "." (.getName method)))
+        args (remove (into #{} cst-args) (keys sig))
+        arglists [['options] ['client `{:keys [~@(map #(-> % name symbol) (conj args "listener" "format"))] :as ~'options}]]
+        cst-gensym (take (count cst-args) (repeatedly gensym))
+        signature (reduce (fn [acc [k v]] (assoc acc k (symbol (str "." (.getName v))))) {} sig)
+        request (gensym "request")
+        options (gensym "options")]
+    `(defn
+       ~fn-name
+       {:doc (format "Required args: %s. Generated from class %s" ~(pr-str cst-args) ~request-class-name)
+        :arglists '(~@arglists)}
+       ([client# options#]
+          (let [[~@cst-gensym] (map acoerce (vals (select-keys options# [~@cst-args])))
+                ~request (new ~r-klass ~@cst-gensym)
+                ~options (dissoc options# ~@cst-args)]
+            ~@(for [[k met] signature] `(when (contains?  ~options ~k)
+                                          (~met ~request (acoerce (get ~options ~k)))))
+            (if (get ~options :listener)
+              (~m-name client# ~request (:listener ~options))
+              (convert (.actionGet (~m-name client# ~request)) (:format ~options)))))
+       ([options#]
+          (~fn-name *client* options#)))))
+
+(defmacro def-requests
+  [client-class-name & request-defs]
+  `(do ~@(map (fn [req-def]
+                `(defn-request ~@(concat req-def [client-class-name])))
+              request-defs)))
+
+(def-requests "org.elasticsearch.client.internal.InternalClient"
+  (index-doc "org.elasticsearch.action.index.IndexRequest" [])
+  (search "org.elasticsearch.action.search.SearchRequest" [])
+  (get-doc "org.elasticsearch.action.get.GetRequest" [:index :type :id])
+  (count-docs "org.elasticsearch.action.count.CountRequest" [:indices])
+  (delete-doc "org.elasticsearch.action.delete.DeleteRequest" [:index :type :id])
+  (delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest" [])
+  (more-like-this "org.elasticsearch.action.mlt.MoreLikeThisRequest" [:index])
+  (percolate "org.elasticsearch.action.percolate.PercolateRequest" []))
 
 (defn make-listener
   [{:keys [on-failure on-response]}]
