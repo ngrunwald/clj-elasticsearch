@@ -84,9 +84,9 @@
         builder (if (= type :json)
                   (XContentFactory/jsonBuilder os)
                   (XContentFactory/smileBuilder os))
-        funny-request (proxy [ToXContent$Params] [])]
+        params org.elasticsearch.action.search.SearchResponse/EMPTY_PARAMS]
     (.startObject builder)
-    (.toXContent response builder funny-request)
+    (.toXContent response builder params)
     (.endObject builder)
     (.flush builder)
     (if (= type :json)
@@ -133,17 +133,6 @@
                 (extend ~(symbol (second conv-def))
                   Clojurable
                   {:convert (fn [response# format#] (~(symbol (str "clj-elasticsearch.client/" (first conv-def))) response# format#))})))))
-
-(def-converters
-  (convert-count "org.elasticsearch.action.count.CountResponse")
-  (convert-delete "org.elasticsearch.action.delete.DeleteResponse")
-  (convert-delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryResponse")
-  (convert-index "org.elasticsearch.action.index.IndexResponse")
-  (convert-optimize "org.elasticsearch.action.admin.indices.optimize.OptimizeResponse"))
-
-(extend-type ToXContent
-  Clojurable
-  (convert [response format] (convert-xcontent response format)))
 
 (defn make-client
   [type spec]
@@ -274,6 +263,29 @@
                 `(defn-request ~@(concat req-def [client-class-name])))
               request-defs)))
 
+(def-converters
+  (convert-count "org.elasticsearch.action.count.CountResponse")
+  (convert-delete "org.elasticsearch.action.delete.DeleteResponse")
+  (convert-delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryResponse")
+  (convert-index "org.elasticsearch.action.index.IndexResponse")
+  (convert-optimize "org.elasticsearch.action.admin.indices.optimize.OptimizeResponse")
+  (convert-analyze "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse")
+  (convert-clear-cache "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheResponse")
+  (convert-create-index "org.elasticsearch.action.admin.indices.create.CreateIndexResponse")
+  (convert-delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexResponse")
+  (convert-delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingResponse")
+  (convert-exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsResponse")
+  (convert-flush-request "org.elasticsearch.action.admin.indices.flush.FlushResponse")
+  (convert-gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotResponse")
+  (convert-put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingResponse")
+  (convert-put-template "org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateResponse")
+  (convert-refresh-index "org.elasticsearch.action.admin.indices.refresh.RefreshResponse")
+  (convert-update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsResponse"))
+
+(extend-type ToXContent
+  Clojurable
+  (convert [response format] (convert-xcontent response format)))
+
 (def-requests "org.elasticsearch.client.internal.InternalClient"
   (index-doc "org.elasticsearch.action.index.IndexRequest" [])
   (search "org.elasticsearch.action.search.SearchRequest" [])
@@ -285,7 +297,24 @@
   (percolate "org.elasticsearch.action.percolate.PercolateRequest" []))
 
 (def-requests "org.elasticsearch.client.IndicesAdminClient"
-  (optimize-index "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest" []))
+  (optimize-index "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest" [])
+  (analyze-request "org.elasticsearch.action.admin.indices.analyze.AnalyzeRequest" [:index :text])
+  (clear-index-cache "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheRequest" [:indices])
+  (close-index "org.elasticsearch.action.admin.indices.close.CloseIndexRequest" [:index])
+  (create-index "org.elasticsearch.action.admin.indices.create.CreateIndexRequest" [:index])
+  (delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest" [:indices])
+  (delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingRequest" [:indices])
+  (delete-template "org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateRequest" [:name])
+  (exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsRequest" [:indices])
+  (flush-index "org.elasticsearch.action.admin.indices.flush.FlushRequest" [:indices])
+  (gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotRequest" [:indices])
+  (put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest" [:indices])
+  (put-template "org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateRequest" [:name])
+  (refresh-index "org.elasticsearch.action.admin.indices.refresh.RefreshRequest" [:indices])
+  (index-segments "org.elasticsearch.action.admin.indices.segments.IndicesSegmentsRequest" [])
+  (index-stats "org.elasticsearch.action.admin.indices.stats.IndicesStatsRequest" [])
+  (index-status "org.elasticsearch.action.admin.indices.status.IndicesStatusRequest" [])
+  (update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsRequest" [:indices]))
 
 (defn make-listener
   [{:keys [on-failure on-response]}]
