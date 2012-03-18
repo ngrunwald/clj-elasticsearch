@@ -102,7 +102,7 @@
         added (if (and parameter (= parameter java.lang.Boolean/TYPE)) (str conv "?") conv)]
     added))
 
-(defmacro make-converter
+(defmacro def-converter
   [fn-name class-name]
   (let [klass (Class/forName class-name)
         methods (.getMethods klass)
@@ -128,35 +128,18 @@
 
 (defmacro def-converters
   [& conv-defs]
-  `(do ~@(map (fn [conv-def]
-                `(make-converter ~@conv-def))
-              conv-defs)))
+  `(do ~@(for [conv-def conv-defs]
+           `(do (def-converter ~@conv-def)
+                (extend ~(symbol (second conv-def))
+                  Clojurable
+                  {:convert (fn [response# format#] (~(symbol (str "clj-elasticsearch.client/" (first conv-def))) response# format#))})))))
 
 (def-converters
   (convert-count "org.elasticsearch.action.count.CountResponse")
   (convert-delete "org.elasticsearch.action.delete.DeleteResponse")
   (convert-delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryResponse")
-  (convert-index "org.elasticsearch.action.index.IndexResponse"))
-
-(extend-type org.elasticsearch.action.count.CountResponse
-  Clojurable
-  (convert [response format] (convert-count response format)))
-
-(extend-type org.elasticsearch.action.delete.DeleteResponse
-  Clojurable
-  (convert [response format] (convert-delete response format)))
-
-(extend-type org.elasticsearch.action.deletebyquery.DeleteByQueryResponse
-  Clojurable
-  (convert [response format] (convert-delete-by-query response format)))
-
-(extend-type org.elasticsearch.action.index.IndexResponse
-  Clojurable
-  (convert [response format] (convert-index response format)))
-
-(extend-type org.elasticsearch.action.count.CountResponse
-  Clojurable
-  (convert [response format] (convert-count response format)))
+  (convert-index "org.elasticsearch.action.index.IndexResponse")
+  (convert-optimize "org.elasticsearch.action.admin.indices.optimize.OptimizeResponse"))
 
 (extend-type ToXContent
   Clojurable
@@ -203,9 +186,11 @@
 (defn is-settable-method?
   [klass method]
   (let [return (.getReturnType method)
+        super (.getSuperclass klass)
+        allowed #{klass super}
         parameters (.getParameterTypes method)
         nb-params (alength parameters)]
-    (and (= return klass) (= nb-params 1))))
+    (and (allowed return) (= nb-params 1))))
 
 (defn is-execute-method?
   [klass method]
@@ -259,13 +244,20 @@
         cst-gensym (take (count cst-args) (repeatedly gensym))
         signature (reduce (fn [acc [k v]] (assoc acc k (symbol (str "." (.getName v))))) {} sig)
         request (gensym "request")
-        options (gensym "options")]
+        options (gensym "options")
+        client (gensym "client")]
     `(defn
        ~fn-name
        {:doc (format "Required args: %s. Generated from class %s" ~(pr-str cst-args) ~request-class-name)
         :arglists '(~@arglists)}
-       ([client# options#]
-          (let [[~@cst-gensym] (map acoerce (vals (select-keys options# [~@cst-args])))
+       ([~client options#]
+          (let [client# ~@(case client-class-name
+                            "org.elasticsearch.client.internal.InternalClient" `(~client)
+                            "org.elasticsearch.client.IndicesAdminClient"
+                            `((get-index-admin-client ~client))
+                            "org.elasticsearch.client.ClusterAdminClient"
+                            `((get-cluster-admin-client ~client)))
+                [~@cst-gensym] (map acoerce (vals (select-keys options# [~@cst-args])))
                 ~request (new ~r-klass ~@cst-gensym)
                 ~options (dissoc options# ~@cst-args)]
             ~@(for [[k met] signature] `(when (contains?  ~options ~k)
@@ -291,6 +283,9 @@
   (delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest" [])
   (more-like-this "org.elasticsearch.action.mlt.MoreLikeThisRequest" [:index])
   (percolate "org.elasticsearch.action.percolate.PercolateRequest" []))
+
+(def-requests "org.elasticsearch.client.IndicesAdminClient"
+  (optimize-index "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest" []))
 
 (defn make-listener
   [{:keys [on-failure on-response]}]
