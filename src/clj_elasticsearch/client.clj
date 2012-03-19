@@ -169,14 +169,9 @@
         ~@body))))
 
 (defn build-document
-  "returns a Builder from the given hash-map"
+  "returns a string representation of a document suitable for indexing"
   [doc]
-  (let [builder (XContentFactory/smileBuilder)]
-    (.startObject builder)
-    (doseq [[field value] doc]
-      (.field builder (name field) value))
-    (.endObject builder)
-    builder))
+  (json/encode doc))
 
 (defn- get-index-admin-client
   [client]
