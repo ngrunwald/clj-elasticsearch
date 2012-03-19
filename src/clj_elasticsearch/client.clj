@@ -15,8 +15,8 @@
 (def ^{:dynamic true} *client*)
 
 (defprotocol Clojurable
-  "Protocol for conversion of Response Classes to Clojure"
-  (convert [response format] "convert response to format"))
+  "Protocol for conversion of Response Classes to many formats"
+  (convert [response format] "convert response to given format. Format can be :json, :java, or :clj"))
 
 (defn update-settings-builder
   "creates or updates a settingsBuilder with the given hash-map"
@@ -92,8 +92,9 @@
     (.toXContent response builder params)
     (.endObject builder)
     (.flush builder)
-    (if (= type :json)
-      (.toString os "UTF-8")
+    (case type
+      :json (.toString os "UTF-8")
+      :java response
       (json/decode-smile (.underlyingBytes os) true))))
 
 (defn- method->arg
@@ -110,9 +111,9 @@
   [fn-name class-name]
   (let [klass (Class/forName class-name)
         methods (.getMethods klass)
-        getters-m  (filter #(let [n (.getName %)]
-                              (and (.startsWith n "get")
-                                   (not (#{"getClass" "getShardFailures"} n)))) methods)
+        getters-m (filter #(let [n (.getName %)]
+                             (and (.startsWith n "get")
+                                  (not (#{"getClass" "getShardFailures"} n)))) methods)
         sig (reduce (fn [acc m]
                       (let [m-name (.getName m)]
                         (assoc acc
@@ -127,8 +128,9 @@
                   ~@(apply concat
                            (for [[kw getter] sig]
                              `(~kw (~getter ~response)))))]
-         (if (= format# :json)
-           (json/generate-string res#)
+         (case format#
+           :json (json/generate-string res#)
+           :java ~response
            res#)))))
 
 (defmacro def-converters
@@ -139,7 +141,8 @@
                 (extend ~(symbol (second conv-def))
                   Clojurable
                   {:convert (fn [response# format#]
-                              (~(symbol (str "clj-elasticsearch.client/" (first conv-def))) response# format#))})))))
+                              (~(symbol (str "clj-elasticsearch.client/" (first conv-def)))
+                               response# format#))})))))
 
 (defn make-client
   "creates a client of given type (:node or :transport) and spec"
@@ -293,7 +296,13 @@
   (convert-put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingResponse")
   (convert-put-template "org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateResponse")
   (convert-refresh-index "org.elasticsearch.action.admin.indices.refresh.RefreshResponse")
-  (convert-update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsResponse"))
+  (convert-update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsResponse")
+  (convert-cluster-health "org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse")
+  (convert-node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse")
+  (convert-node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartResponse")
+  (convert-node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownResponse")
+  (convert-node-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsResponse")
+  (convert-update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsResponse"))
 
 (extend-type ToXContent
   Clojurable
@@ -328,6 +337,14 @@
   (index-stats "org.elasticsearch.action.admin.indices.stats.IndicesStatsRequest" [])
   (index-status "org.elasticsearch.action.admin.indices.status.IndicesStatusRequest" [])
   (update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsRequest" [:indices]))
+
+(def-requests "org.elasticsearch.client.ClusterAdminClient"
+  (cluster-health "org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest" [:indices])
+  (node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequest" [])
+  (node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartRequest" [:nodes-ids])
+  (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids])
+  (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids])
+  (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" []))
 
 (defn make-listener
   "makes a listener suitable as a callback for requests"

@@ -8,12 +8,11 @@
   [path]
   (let [d (file path)]
     (if (.isDirectory d)
-      (doseq [f (seq (.listFiles d))]
-        (delete-dir f)
-        (try
-          (.delete f)
-          (catch Exception e
-            nil)))
+      (do
+        (doseq [f (seq (.listFiles d))]
+          (delete-dir f)
+          (.delete f))
+        (.delete d))
       (.delete d))))
 
 (defn es-fixture
