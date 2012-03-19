@@ -6,7 +6,7 @@ The API docs are available [here](http://ngrunwald.github.com/clj-elasticsearch)
 
 ## Usage
 
-For the most basic case:
+For the most basic use case:
 
 ```clojure
 (use 'clj-elasticsearch)
@@ -29,12 +29,14 @@ You can also use the functions asynchronously by providing a callback listener w
                               {:on-failure (fn [e] (throw e))
                                :on-success (fn [res] (println (convert res :clj)))})})
 ```
+A bit more details can be found in the tests.
+
 ## See Also
 
 For other Elasticsearch Clojure clients:
 
-* [elastisch](https://github.com/clojurewerkz/elastisch) A idiomatic Clojure wrapper for the Http API
-* [esearch](https://github.com/mpenet/clj-esearch) An asynchronous client for the Http API
+* [elastisch](https://github.com/clojurewerkz/elastisch): A idiomatic Clojure wrapper for the Http API
+* [esearch](https://github.com/mpenet/clj-esearch): An asynchronous client for the Http API
 
 ## License
 
