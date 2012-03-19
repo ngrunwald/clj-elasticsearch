@@ -40,6 +40,6 @@ For other Elasticsearch Clojure clients:
 
 ## License
 
-Copyright (C) 2012 Linkfluence
+Copyright (C) 2012 [Linkfluence](http://linkfluence.net)
 
 Distributed under the Eclipse Public License, the same as Clojure.
