@@ -32,8 +32,9 @@ You can also use the functions asynchronously by providing a callback listener w
 ## See Also
 
 For other Elasticsearch Clojure clients:
-- [elastisch](https://github.com/clojurewerkz/elastisch) A idiomatic Clojure wrapper for the Http API
-- [esearch](https://github.com/mpenet/clj-esearch) An asynchronous client for the Http API
+
+* [elastisch](https://github.com/clojurewerkz/elastisch) A idiomatic Clojure wrapper for the Http API
+* [esearch](https://github.com/mpenet/clj-esearch) An asynchronous client for the Http API
 
 ## License
 
