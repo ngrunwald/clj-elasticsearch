@@ -19,6 +19,7 @@
   (convert [response format] "convert response to format"))
 
 (defn update-settings-builder
+  "creates or updates a settingsBuilder with the given hash-map"
   ([builder settings]
      (doseq [[k v] settings]
        (if (or (vector? v) (list? v))
@@ -29,6 +30,7 @@
      (update-settings-builder (ImmutableSettings/settingsBuilder) settings)))
 
 (defn make-node
+  "makes a new native node client"
   [{:keys [local-mode client-mode load-config cluster-name settings hosts]
     :or {client-mode true
          load-config false
@@ -48,7 +50,7 @@
     (update-settings-builder (.settings nodebuilder) (merge settings host-conf))
     (.node nodebuilder)))
 
-(defn make-inet-address
+(defn- make-inet-address
   [spec]
   (let [m (re-matcher #"([^\[\:]+)[\[\:]?(\d*)" spec)
         _ (.find m)
@@ -57,6 +59,7 @@
     (InetSocketTransportAddress. host port)))
 
 (defn make-transport-client
+  "creates a transport client"
   [{:keys [load-config cluster-name settings hosts sniff]
     :or {client-mode true
          load-config false
@@ -71,14 +74,14 @@
       (.addTransportAddress client (make-inet-address host)))
     client))
 
-(defn make-content-builder
+(defn- make-content-builder
   [& [type]]
   (case type
     :json (XContentFactory/jsonBuilder)
     :smile (XContentFactory/smileBuilder)
     (XContentFactory/smileBuilder)))
 
-(defn convert-xcontent
+(defn- convert-xcontent
   [response & [format]]
   (let [os (FastByteArrayOutputStream.)
         builder (if (= type :json)
@@ -93,7 +96,7 @@
       (.toString os "UTF-8")
       (json/decode-smile (.underlyingBytes os) true))))
 
-(defn method->arg
+(defn- method->arg
   [method]
   (let [name (.getName method)
         parameter (first (seq (.getParameterTypes method)))
@@ -103,6 +106,7 @@
     added))
 
 (defmacro def-converter
+  ^{:private true}
   [fn-name class-name]
   (let [klass (Class/forName class-name)
         methods (.getMethods klass)
@@ -117,6 +121,7 @@
                     {} getters-m)
         response (gensym "response")]
     `(defn ~fn-name
+       {:private true}
        [~(with-meta response {:tag klass}) & [format#]]
        (let [res# (hash-map
                   ~@(apply concat
@@ -127,14 +132,17 @@
            res#)))))
 
 (defmacro def-converters
+  ^{:private true}
   [& conv-defs]
   `(do ~@(for [conv-def conv-defs]
            `(do (def-converter ~@conv-def)
                 (extend ~(symbol (second conv-def))
                   Clojurable
-                  {:convert (fn [response# format#] (~(symbol (str "clj-elasticsearch.client/" (first conv-def))) response# format#))})))))
+                  {:convert (fn [response# format#]
+                              (~(symbol (str "clj-elasticsearch.client/" (first conv-def))) response# format#))})))))
 
 (defn make-client
+  "creates a client of given type (:node or :transport) and spec"
   [type spec]
   (case type
     :node (.client (make-node spec))
@@ -142,6 +150,7 @@
     (make-transport-client spec)))
 
 (defmacro with-node-client
+  "opens a node client with given spec and executes the body before closing it"
   [server-spec & body]
   `(with-open [node# (make-node ~server-spec)]
     (binding [clj-elasticsearch.client/*client* (.client node#)]
@@ -149,6 +158,7 @@
         ~@body))))
 
 (defmacro with-transport-client
+  "opens a transport client with given spec and executes the body before closing it"
   [server-spec & body]
   `(with-open [client# (make-client :transport ~server-spec)]
     (binding [clj-elasticsearch.client/*client* client#]
@@ -156,6 +166,7 @@
         ~@body))))
 
 (defn build-document
+  "returns a Builder from the given hash-map"
   [doc]
   (let [builder (XContentFactory/smileBuilder)]
     (.startObject builder)
@@ -164,15 +175,15 @@
     (.endObject builder)
     builder))
 
-(defn get-index-admin-client
+(defn- get-index-admin-client
   [client]
   (-> client (.admin) (.indices)))
 
-(defn get-cluster-admin-client
+(defn- get-cluster-admin-client
   [client]
   (-> client (.admin) (.cluster)))
 
-(defn is-settable-method?
+(defn- is-settable-method?
   [klass method]
   (let [return (.getReturnType method)
         super (.getSuperclass klass)
@@ -181,21 +192,21 @@
         nb-params (alength parameters)]
     (and (allowed return) (= nb-params 1))))
 
-(defn is-execute-method?
+(defn- is-execute-method?
   [klass method]
   (let [return (.getReturnType method)
         parameters (into #{} (seq (.getParameterTypes method)))
         nb-params (count parameters)]
     (and (contains? parameters klass) (= nb-params 1))))
 
-(defn get-settable-methods
+(defn- get-settable-methods
   [class-name]
   (let [klass (Class/forName class-name)
         methods (.getMethods klass)
         settable (filter #(is-settable-method? klass %) (seq methods))]
     settable))
 
-(defn get-execute-method
+(defn- get-execute-method
   [request-class-name client-class-name]
   (let [c-klass (Class/forName client-class-name)
         r-klass (Class/forName request-class-name)
@@ -203,20 +214,21 @@
         executable (first (filter #(is-execute-method? r-klass %) (seq methods)))]
     executable))
 
-(defn request-signature
+(defn- request-signature
   [class-name]
   (let [methods (get-settable-methods class-name)
         args (map method->arg methods)]
     (zipmap (map keyword args)
             methods)))
 
-(defn acoerce
+(defn- acoerce
   [val]
   (if (or (vector? val) (list? val))
     (into-array val)
     val))
 
 (defmacro defn-request
+  ^{:private true}
   [fn-name request-class-name cst-args client-class-name]
   (let [r-klass (Class/forName request-class-name)
         sig (request-signature request-class-name)
@@ -258,6 +270,7 @@
           (~fn-name *client* options#)))))
 
 (defmacro def-requests
+  ^{:private true}
   [client-class-name & request-defs]
   `(do ~@(map (fn [req-def]
                 `(defn-request ~@(concat req-def [client-class-name])))
@@ -317,6 +330,7 @@
   (update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsRequest" [:indices]))
 
 (defn make-listener
+  "makes a listener suitable as a callback for requests"
   [{:keys [on-failure on-response]}]
   (proxy [ActionListener] []
     (onFailure [e] (on-failure e))
