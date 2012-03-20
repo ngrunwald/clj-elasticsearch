@@ -83,19 +83,20 @@
 
 (defn- convert-xcontent
   [response & [format]]
-  (let [os (FastByteArrayOutputStream.)
-        builder (if (= type :json)
-                  (XContentFactory/jsonBuilder os)
-                  (XContentFactory/smileBuilder os))
-        params org.elasticsearch.action.search.SearchResponse/EMPTY_PARAMS]
-    (.startObject builder)
-    (.toXContent response builder params)
-    (.endObject builder)
-    (.flush builder)
-    (case type
-      :json (.toString os "UTF-8")
-      :java response
-      (json/decode-smile (.underlyingBytes os) true))))
+  (if (= format :java)
+    response
+    (let [os (FastByteArrayOutputStream.)
+          builder (if (= format :json)
+                    (XContentFactory/jsonBuilder os)
+                    (XContentFactory/smileBuilder os))
+          params org.elasticsearch.action.search.SearchResponse/EMPTY_PARAMS]
+      (.startObject builder)
+      (.toXContent response builder params)
+      (.endObject builder)
+      (.flush builder)
+      (case format
+        :json (.toString os "UTF-8")
+        (json/decode-smile (.underlyingBytes os) true)))))
 
 (defn- method->arg
   [method]
@@ -114,6 +115,7 @@
         getters-m (filter #(let [n (.getName %)]
                              (and (.startsWith n "get")
                                   (not (#{"getClass" "getShardFailures"} n)))) methods)
+        iterator? (some #{"iterator"} (map #(.getName %) methods))
         sig (reduce (fn [acc m]
                       (let [m-name (.getName m)]
                         (assoc acc
@@ -124,14 +126,18 @@
     `(defn ~fn-name
        {:private true}
        [~(with-meta response {:tag klass}) & [format#]]
-       (let [res# (hash-map
-                  ~@(apply concat
-                           (for [[kw getter] sig]
-                             `(~kw (~getter ~response)))))]
-         (case format#
-           :json (json/generate-string res#)
-           :java ~response
-           res#)))))
+       (if (= format# :java)
+         ~response
+         (let [res# (hash-map
+                     ~@(let [gets (for [[kw getter] sig]
+                                    `(~kw (~getter ~response)))
+                             gets (if iterator?
+                                    (conj gets  `(:iterator (iterator-seq (.iterator ~response))))
+                                    gets)]
+                         (apply concat gets)))]
+           (case format#
+             :json (json/generate-string res#)
+             res#))))))
 
 (defmacro def-converters
   ^{:private true}
@@ -171,7 +177,7 @@
 (defn build-document
   "returns a string representation of a document suitable for indexing"
   [doc]
-  (json/encode doc))
+  (json/encode-smile doc))
 
 (defn- get-index-admin-client
   [client]
@@ -279,6 +285,7 @@
   (convert-delete "org.elasticsearch.action.delete.DeleteResponse")
   (convert-delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryResponse")
   (convert-index "org.elasticsearch.action.index.IndexResponse")
+  (convert-percolate "org.elasticsearch.action.percolate.PercolateResponse")
   (convert-optimize "org.elasticsearch.action.admin.indices.optimize.OptimizeResponse")
   (convert-analyze "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse")
   (convert-clear-cache "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheResponse")
