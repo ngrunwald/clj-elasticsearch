@@ -55,7 +55,7 @@
   (let [m (re-matcher #"([^\[\:]+)[\[\:]?(\d*)" spec)
         _ (.find m)
         [_ host p] (re-groups m)
-        port (if p (Integer/parseInt (str p)) 9300)]
+        port (if (and p (not (empty? p))) (Integer/parseInt (str p)) 9300)]
     (InetSocketTransportAddress. host port)))
 
 (defn make-transport-client
@@ -318,7 +318,8 @@
   (delete-doc "org.elasticsearch.action.delete.DeleteRequest" [:index :type :id])
   (delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest" [])
   (more-like-this "org.elasticsearch.action.mlt.MoreLikeThisRequest" [:index])
-  (percolate "org.elasticsearch.action.percolate.PercolateRequest" []))
+  (percolate "org.elasticsearch.action.percolate.PercolateRequest" [])
+  (scroll "org.elasticsearch.action.search.SearchScrollRequest" [:scroll-id]))
 
 (def-requests "org.elasticsearch.client.IndicesAdminClient"
   (optimize-index "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest" [])
