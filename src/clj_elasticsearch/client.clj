@@ -231,6 +231,11 @@
     (into-array val)
     val))
 
+(defn select-vals
+  [h ks]
+  (for [k ks]
+    (get h k)))
+
 (defmacro defn-request
   ^{:private true}
   [fn-name request-class-name cst-args client-class-name]
@@ -262,14 +267,15 @@
                             `((get-index-admin-client ~client))
                             "org.elasticsearch.client.ClusterAdminClient"
                             `((get-cluster-admin-client ~client)))
-                [~@cst-gensym] (map acoerce (vals (select-keys options# [~@cst-args])))
+                [~@cst-gensym] (map acoerce (select-vals options# [~@cst-args]))
                 ~request (new ~r-klass ~@cst-gensym)
                 ~options (dissoc options# ~@cst-args)]
             ~@(for [[k met] signature] `(when (contains?  ~options ~k)
                                           (~met ~request (acoerce (get ~options ~k)))))
-            (if (get ~options :listener)
-              (~m-name client# ~request (:listener ~options))
-              (convert (.actionGet (~m-name client# ~request)) (:format ~options)))))
+            (cond
+             (get ~options :debug) ~request
+             (get ~options :listener) (~m-name client# ~request (:listener ~options))
+             :else (convert (.actionGet (~m-name client# ~request)) (:format ~options)))))
        ([options#]
           (~fn-name *client* options#)))))
 
@@ -313,9 +319,9 @@
 (def-requests "org.elasticsearch.client.internal.InternalClient"
   (index-doc "org.elasticsearch.action.index.IndexRequest" [])
   (search "org.elasticsearch.action.search.SearchRequest" [])
-  (get-doc "org.elasticsearch.action.get.GetRequest" [:index :type :id])
+  (get-doc "org.elasticsearch.action.get.GetRequest" [:index])
   (count-docs "org.elasticsearch.action.count.CountRequest" [:indices])
-  (delete-doc "org.elasticsearch.action.delete.DeleteRequest" [:index :type :id])
+  (delete-doc "org.elasticsearch.action.delete.DeleteRequest" [])
   (delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest" [])
   (more-like-this "org.elasticsearch.action.mlt.MoreLikeThisRequest" [:index])
   (percolate "org.elasticsearch.action.percolate.PercolateRequest" [])
