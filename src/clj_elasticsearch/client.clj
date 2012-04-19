@@ -82,16 +82,15 @@
     (XContentFactory/smileBuilder)))
 
 (defn- convert-xcontent
-  [response & [format]]
+  [^org.elasticsearch.common.xcontent.ToXContent response empty-params & [format]]
   (if (= format :java)
     response
     (let [os (FastByteArrayOutputStream.)
           builder (if (= format :json)
                     (XContentFactory/jsonBuilder os)
-                    (XContentFactory/smileBuilder os))
-          params org.elasticsearch.action.search.SearchResponse/EMPTY_PARAMS]
+                    (XContentFactory/smileBuilder os))]
       (.startObject builder)
-      (.toXContent response builder params)
+      (.toXContent response builder empty-params)
       (.endObject builder)
       (.flush builder)
       (case format
@@ -139,15 +138,33 @@
              :json (json/generate-string res#)
              res#))))))
 
+(defn get-empty-params
+  [class-name]
+  (let [klass (Class/forName class-name)
+        empty-params-field (first (filter #(= (.getName %) "EMPTY_PARAMS") (.getFields klass)))
+        empty-params (.get empty-params-field klass)]
+    empty-params))
+
+(defmacro def-xconverter
+  ^{:private true}
+  [fn-name class-name]
+  (let [klass (Class/forName class-name)
+        response (gensym "response")]
+    `(let [empty# (get-empty-params ~class-name)]
+       (defn ~fn-name
+         {:private true}
+         [~(with-meta response {:tag klass}) & [format#]]
+         (convert-xcontent ~response empty# format#)))))
+
 (defmacro def-converters
   ^{:private true}
   [& conv-defs]
-  `(do ~@(for [conv-def conv-defs]
-           `(do (def-converter ~@conv-def)
-                (extend ~(symbol (second conv-def))
+  `(do ~@(for [[nam klass typ] conv-defs]
+           `(do (~(if (= typ :xcontent) 'def-xconverter 'def-converter) ~nam ~klass)
+                (extend ~(symbol klass)
                   Clojurable
                   {:convert (fn [response# format#]
-                              (~(symbol (str "clj-elasticsearch.client/" (first conv-def)))
+                              (~(symbol (str "clj-elasticsearch.client/" nam))
                                response# format#))})))))
 
 (defn make-client
@@ -241,13 +258,7 @@
   [fn-name request-class-name cst-args client-class-name]
   (let [r-klass (Class/forName request-class-name)
         sig (request-signature request-class-name)
-        c-klass (Class/forName client-class-name)
         method (get-execute-method request-class-name client-class-name)
-        response-klass (.getReturnType method)
-        response-type (cond
-                       (some #(=  %)
-                             (seq (.getInterfaces response-klass))) :xcontent
-                       :else :bean)
         m-name (symbol (str "." (.getName method)))
         args (remove (into #{} cst-args) (keys sig))
         arglists [['options] ['client `{:keys [~@(map #(-> % name symbol) (conj args "listener" "format"))] :as ~'options}]]
@@ -286,35 +297,71 @@
                 `(defn-request ~@(concat req-def [client-class-name])))
               request-defs)))
 
-(def-converters
-  (convert-count "org.elasticsearch.action.count.CountResponse")
-  (convert-delete "org.elasticsearch.action.delete.DeleteResponse")
-  (convert-delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryResponse")
-  (convert-index "org.elasticsearch.action.index.IndexResponse")
-  (convert-percolate "org.elasticsearch.action.percolate.PercolateResponse")
-  (convert-optimize "org.elasticsearch.action.admin.indices.optimize.OptimizeResponse")
-  (convert-analyze "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse")
-  (convert-clear-cache "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheResponse")
-  (convert-create-index "org.elasticsearch.action.admin.indices.create.CreateIndexResponse")
-  (convert-delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexResponse")
-  (convert-delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingResponse")
-  (convert-exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsResponse")
-  (convert-flush-request "org.elasticsearch.action.admin.indices.flush.FlushResponse")
-  (convert-gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotResponse")
-  (convert-put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingResponse")
-  (convert-put-template "org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateResponse")
-  (convert-refresh-index "org.elasticsearch.action.admin.indices.refresh.RefreshResponse")
-  (convert-update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsResponse")
-  (convert-cluster-health "org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse")
-  (convert-node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse")
-  (convert-node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartResponse")
-  (convert-node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownResponse")
-  (convert-node-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsResponse")
-  (convert-update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsResponse"))
+(defn- convert-source
+  [src]
+  (cond
+   (instance? java.util.HashMap src) (into {} (map (fn [^java.util.Map$Entry e] [(.getKey e)
+                                                           (convert-source (.getValue e))]) src))
+   (instance? java.util.ArrayList src) (into [] (map convert-source src))
+   :else src))
 
-(extend-type ToXContent
-  Clojurable
-  (convert [response format] (convert-xcontent response format)))
+(defn- convert-fields
+  [^java.util.HashMap hm]
+  (into {} (map (fn [^org.elasticsearch.index.get.GetField f]
+                  [(.getName f) (convert-source (.getValue f))]) (.values hm))))
+
+(defn- convert-get
+  [^org.elasticsearch.action.get.GetResponse response & [format]]
+  (if (= format :java)
+    response
+    (let [data (if (.exists response)
+                 {:_index (.getIndex response)
+                  :_type (.getType response)
+                  :_id (.getId response)
+                  :_version (.getVersion response)})
+          data (if-not (.isSourceEmpty response)
+                 (assoc data :_source (convert-source (.sourceAsMap response)))
+                 data)
+          data (let [fields (.getFields response)]
+                 (if-not (empty? fields)
+                   (assoc data :fields (convert-fields fields))
+                   data))]
+      (if (= format :json)
+        (json/generate-string data)
+        data))))
+
+(def-converters
+  (convert-indices-status "org.elasticsearch.action.admin.indices.status.IndicesStatusResponse" :xcontent)
+  (convert-analyze "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse" :xcontent)
+  (convert-search "org.elasticsearch.action.search.SearchResponse" :xcontent)
+  (convert-count "org.elasticsearch.action.count.CountResponse" :object)
+  (convert-delete "org.elasticsearch.action.delete.DeleteResponse" :object)
+  (convert-delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryResponse" :object)
+  (convert-index "org.elasticsearch.action.index.IndexResponse" :object)
+  (convert-percolate "org.elasticsearch.action.percolate.PercolateResponse" :object)
+  (convert-optimize "org.elasticsearch.action.admin.indices.optimize.OptimizeResponse" :object)
+  (convert-analyze "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse" :object)
+  (convert-clear-cache "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheResponse" :object)
+  (convert-create-index "org.elasticsearch.action.admin.indices.create.CreateIndexResponse" :object)
+  (convert-delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexResponse" :object)
+  (convert-delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingResponse" :object)
+  (convert-exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsResponse" :object)
+  (convert-flush-request "org.elasticsearch.action.admin.indices.flush.FlushResponse" :object)
+  (convert-gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotResponse" :object)
+  (convert-put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingResponse" :object)
+  (convert-put-template "org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateResponse" :object)
+  (convert-refresh-index "org.elasticsearch.action.admin.indices.refresh.RefreshResponse" :object)
+  (convert-update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsResponse" :object)
+  (convert-cluster-health "org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse" :object)
+  (convert-node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse" :object)
+  (convert-node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartResponse" :object)
+  (convert-node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownResponse" :object)
+  (convert-node-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsResponse" :object)
+  (convert-update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsResponse" :object))
+
+(extend-type org.elasticsearch.action.get.GetResponse
+   Clojurable
+   (convert [response format] (convert-get response format)))
 
 (def-requests "org.elasticsearch.client.internal.InternalClient"
   (index-doc "org.elasticsearch.action.index.IndexRequest" [])

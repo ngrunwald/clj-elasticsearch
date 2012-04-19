@@ -30,11 +30,19 @@
 
 (deftest es-client
   (is (:id (index-doc {:index "test" :type "tyu"
-                       :source (build-document {:field1 "toto" :field2 42})})))
+                       :source (build-document {:field1 ["toto" "tutu"] :field2 42 :field3 {:tyu {:foo "bar"}}})
+                       :id "mid"})))
   (is (> (:successful-shards (refresh-index {:indices ["test"]})) 0))
   (is (= 1 (:count (count-docs {:indices ["test"]}))))
+  (let [d (get-doc {:index "test" :type "tyu" :id "mid" :fields ["field1" "field2" "field3"]})]
+    (is (nil? (:_source d)))
+    (is (= {"tyu" {"foo" "bar"}} (get-in d [:fields "field3"]))))
+  (let [d (get-doc {:index "test" :type "tyu" :id "mid"})]
+    (is (nil? (:fields d)))
+    (is (= {"tyu" {"foo" "bar"}} (get-in d [:_source "field3"])))
+    (is (= ["toto" "tutu"] (get-in d [:_source "field1"]))))
   (is (get-in (first
                (get-in (search {:indices ["test"] :types ["tyu"] :extra-source match-all})
                        [:hits :hits]))
               [:_source :field1])
-      "toto"))
+      ["toto" "tutu"]))
