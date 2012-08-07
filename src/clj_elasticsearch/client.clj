@@ -3,16 +3,25 @@
             [clojure.string :as str])
   (:import [org.elasticsearch.node NodeBuilder]
            [org.elasticsearch.common.xcontent XContentFactory ToXContent$Params]
-           [org.elasticsearch.common.settings ImmutableSettings]
+           [org.elasticsearch.common.settings ImmutableSettings ImmutableSettings$Builder]
            [org.elasticsearch.action.admin.indices.status IndicesStatusRequest]
            [org.elasticsearch.common.io FastByteArrayOutputStream]
            [org.elasticsearch.client.transport TransportClient]
            [org.elasticsearch.client.support AbstractClient]
+           [org.elasticsearch.node Node]
+           [org.elasticsearch.client Client ClusterAdminClient IndicesAdminClient]
            [org.elasticsearch.common.transport InetSocketTransportAddress]
            [org.elasticsearch.action  ActionListener]
-           [org.elasticsearch.common.xcontent ToXContent]))
+           [org.elasticsearch.common.xcontent ToXContent]
+           [java.lang.reflect Method Field]))
 
 (def ^{:dynamic true} *client*)
+
+(defn class->symbol
+  [^Class klass]
+  (-> klass
+      (.getName)
+      (symbol)))
 
 (defprotocol Clojurable
   "Protocol for conversion of Response Classes to many formats"
@@ -20,17 +29,20 @@
 
 (defn update-settings-builder
   "creates or updates a settingsBuilder with the given hash-map"
-  ([builder settings]
-     (doseq [[k v] settings]
-       (if (or (vector? v) (list? v))
-         (.putArray builder (name k) (into-array String (map str v)))
-         (.put builder (name k) (str v))))
-     builder)
-  ([settings]
-     (update-settings-builder (ImmutableSettings/settingsBuilder) settings)))
+  (^ImmutableSettings$Builder
+   [^ImmutableSettings$Builder builder settings]
+   (doseq [[k v] settings]
+     (if (or (vector? v) (list? v))
+       (.putArray builder (name k) (into-array String (map str v)))
+       (.put builder (name k) (str v))))
+   builder)
+  (^ImmutableSettings$Builder
+   [settings]
+   (update-settings-builder (ImmutableSettings/settingsBuilder) settings)))
 
 (defn make-node
   "makes a new native node client"
+  ^Node
   [{:keys [local-mode client-mode load-config cluster-name settings hosts]
     :or {client-mode true
          load-config false
@@ -54,13 +66,13 @@
   [spec]
   (let [m (re-matcher #"([^\[\:]+)[\[\:]?(\d*)" spec)
         _ (.find m)
-        [_ host p] (re-groups m)
-        port (if (and p (not (empty? p))) (Integer/parseInt (str p)) 9300)]
+        [_ ^String host p] (re-groups m)
+        ^Integer port (if (and p (not (empty? p))) (Integer/parseInt (str p)) 9300)]
     (InetSocketTransportAddress. host port)))
 
 (defn make-transport-client
   "creates a transport client"
-  [{:keys [load-config cluster-name settings hosts sniff]
+  [{:keys [^Boolean load-config cluster-name settings hosts sniff]
     :or {client-mode true
          load-config false
          local-mode false
@@ -98,7 +110,7 @@
         (json/decode-smile (.underlyingBytes os) true)))))
 
 (defn- method->arg
-  [method]
+  [^Method method]
   (let [name (.getName method)
         parameter (first (seq (.getParameterTypes method)))
         conv (str/replace name #"^set|get" "")
@@ -110,21 +122,24 @@
   ^{:private true}
   [fn-name class-name]
   (let [klass (Class/forName class-name)
+        k-symb (class->symbol klass)
         methods (.getMethods klass)
-        getters-m (filter #(let [n (.getName %)]
-                             (and (.startsWith n "get")
-                                  (not (#{"getClass" "getShardFailures"} n)))) methods)
-        iterator? (some #{"iterator"} (map #(.getName %) methods))
-        sig (reduce (fn [acc m]
+        getters-m (filter (fn [^Method m]
+                            (let [n (.getName m)]
+                              (and (.startsWith n "get")
+                                   (not (#{"getClass" "getShardFailures"} n)))))
+                          methods)
+        iterator? (some #{"iterator"} (map (fn [^Method m] (.getName m)) methods))
+        sig (reduce (fn [acc ^Method m]
                       (let [m-name (.getName m)]
                         (assoc acc
                           (keyword (method->arg m))
                           (symbol (str "." m-name)))))
                     {} getters-m)
-        response (gensym "response")]
+        response (with-meta (gensym "response") {:tag k-symb})]
     `(defn ~fn-name
        {:private true}
-       [~(with-meta response {:tag klass}) & [format#]]
+       [~response & [format#]]
        (if (= format# :java)
          ~response
          (let [res# (hash-map
@@ -141,7 +156,9 @@
 (defn get-empty-params
   [class-name]
   (let [klass (Class/forName class-name)
-        empty-params-field (first (filter #(= (.getName %) "EMPTY_PARAMS") (.getFields klass)))
+        ^Field empty-params-field (first (filter (fn [^Field m]
+                                            (= (.getName m) "EMPTY_PARAMS"))
+                                          (.getFields klass)))
         empty-params (.get empty-params-field klass)]
     empty-params))
 
@@ -197,15 +214,17 @@
   (json/encode-smile doc))
 
 (defn- get-index-admin-client
-  [client]
+  ^IndicesAdminClient
+  [^Client client]
   (-> client (.admin) (.indices)))
 
 (defn- get-cluster-admin-client
-  [client]
+  ^ClusterAdminClient
+  [^Client client]
   (-> client (.admin) (.cluster)))
 
 (defn- is-settable-method?
-  [klass method]
+  [^Class klass ^Method method]
   (let [return (.getReturnType method)
         super (.getSuperclass klass)
         allowed #{klass super}
@@ -214,13 +233,14 @@
     (and (allowed return) (= nb-params 1))))
 
 (defn- is-execute-method?
-  [klass method]
+  [^Class klass ^Method method]
   (let [return (.getReturnType method)
         parameters (into #{} (seq (.getParameterTypes method)))
         nb-params (count parameters)]
     (and (contains? parameters klass) (= nb-params 1))))
 
 (defn- get-settable-methods
+  ^Method
   [class-name]
   (let [klass (Class/forName class-name)
         methods (.getMethods klass)
@@ -228,6 +248,7 @@
     settable))
 
 (defn- get-execute-method
+  ^Method
   [request-class-name client-class-name]
   (let [c-klass (Class/forName client-class-name)
         r-klass (Class/forName request-class-name)
@@ -257,16 +278,20 @@
   ^{:private true}
   [fn-name request-class-name cst-args client-class-name]
   (let [r-klass (Class/forName request-class-name)
+        r-symb (class->symbol r-klass)
+        c-symb (symbol client-class-name)
         sig (request-signature request-class-name)
         method (get-execute-method request-class-name client-class-name)
         m-name (symbol (str "." (.getName method)))
         args (remove (into #{} cst-args) (keys sig))
-        arglists [['options] ['client `{:keys [~@(map #(-> % name symbol) (conj args "listener" "format"))] :as ~'options}]]
+        arglists [['options]
+                  ['client `{:keys [~@(map #(-> % name symbol)
+                                           (conj args "listener" "format"))] :as ~'options}]]
         cst-gensym (take (count cst-args) (repeatedly gensym))
-        signature (reduce (fn [acc [k v]] (assoc acc k (symbol (str "." (.getName v))))) {} sig)
-        request (gensym "request")
+        signature (reduce (fn [acc [k ^Method v]] (assoc acc k (symbol (str "." (.getName v))))) {} sig)
+        request (with-meta (gensym "request") {:tag r-symb})
         options (gensym "options")
-        client (gensym "client")]
+        client (with-meta (gensym "client") {:tag c-symb})]
     `(defn
        ~fn-name
        {:doc (format "Required args: %s. Generated from class %s" ~(pr-str cst-args) ~request-class-name)
@@ -281,7 +306,7 @@
                 [~@cst-gensym] (map acoerce (select-vals options# [~@cst-args]))
                 ~request (new ~r-klass ~@cst-gensym)
                 ~options (dissoc options# ~@cst-args)]
-            ~@(for [[k met] signature] `(when (contains?  ~options ~k)
+            ~@(for [[k met] signature] `(when (contains? ~options ~k)
                                           (~met ~request (acoerce (get ~options ~k)))))
             (cond
              (get ~options :debug) ~request
