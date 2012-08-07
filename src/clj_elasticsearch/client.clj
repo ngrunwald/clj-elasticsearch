@@ -17,12 +17,6 @@
 
 (def ^{:dynamic true} *client*)
 
-(defn class->symbol
-  [^Class klass]
-  (-> klass
-      (.getName)
-      (symbol)))
-
 (defprotocol Clojurable
   "Protocol for conversion of Response Classes to many formats"
   (convert [response format] "convert response to given format. Format can be :json, :java, or :clj"))
@@ -122,7 +116,7 @@
   ^{:private true}
   [fn-name class-name]
   (let [klass (Class/forName class-name)
-        k-symb (class->symbol klass)
+        k-symb (symbol class-name)
         methods (.getMethods klass)
         getters-m (filter (fn [^Method m]
                             (let [n (.getName m)]
@@ -278,7 +272,7 @@
   ^{:private true}
   [fn-name request-class-name cst-args client-class-name]
   (let [r-klass (Class/forName request-class-name)
-        r-symb (class->symbol r-klass)
+        r-symb (symbol request-class-name)
         c-symb (symbol client-class-name)
         sig (request-signature request-class-name)
         method (get-execute-method request-class-name client-class-name)
