@@ -36,7 +36,6 @@
 
 (defn make-node
   "makes a new native node client"
-  ^Node
   [{:keys [local-mode client-mode load-config cluster-name settings hosts]
     :or {client-mode true
          load-config false
