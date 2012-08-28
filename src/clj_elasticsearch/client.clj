@@ -36,6 +36,7 @@
 
 (defn make-node
   "makes a new native node client"
+;  ^Node
   [{:keys [local-mode client-mode load-config cluster-name settings hosts]
     :or {client-mode true
          load-config false
@@ -100,7 +101,7 @@
       (.flush builder)
       (case format
         :json (.toString os "UTF-8")
-        (json/decode-smile (.underlyingBytes os) true)))))
+        (json/decode-smile (.. os bytes toBytes) true)))))
 
 (defn- method->arg
   [^Method method]
