@@ -1,6 +1,7 @@
 (ns clj-elasticsearch.client
   (:require [cheshire.core :as json]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [gavagai.core :as gav])
   (:import [org.elasticsearch.node NodeBuilder]
            [org.elasticsearch.common.xcontent XContentFactory ToXContent$Params]
            [org.elasticsearch.common.settings ImmutableSettings ImmutableSettings$Builder]
@@ -16,6 +17,8 @@
            [java.lang.reflect Method Field]))
 
 (def ^{:dynamic true} *client*)
+
+(def ^:const local-ns (find-ns 'clj-elasticsearch.client))
 
 (defprotocol Clojurable
   "Protocol for conversion of Response Classes to many formats"
@@ -138,7 +141,8 @@
          ~response
          (let [res# (hash-map
                      ~@(let [gets (for [[kw getter] sig]
-                                    `(~kw (~getter ~response)))
+                                    `(~kw (gav/translate (~getter ~response) {:nspace local-ns
+                                                                              :translate-arrays? true})))
                              gets (if iterator?
                                     (conj gets  `(:iterator (iterator-seq (.iterator ~response))))
                                     gets)]
@@ -372,6 +376,7 @@
   (convert-refresh-index "org.elasticsearch.action.admin.indices.refresh.RefreshResponse" :object)
   (convert-update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsResponse" :object)
   (convert-cluster-health "org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse" :object)
+  (convert-cluster-state "org.elasticsearch.action.admin.cluster.state.ClusterStateResponse" :object)
   (convert-node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse" :object)
   (convert-node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartResponse" :object)
   (convert-node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownResponse" :object)
@@ -415,11 +420,24 @@
 
 (def-requests "org.elasticsearch.client.ClusterAdminClient"
   (cluster-health "org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest" [:indices])
+  (cluster-state "org.elasticsearch.action.admin.cluster.state.ClusterStateRequest" [])
   (node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequest" [])
   (node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartRequest" [:nodes-ids])
   (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids])
   (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids])
   (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" []))
+
+(gav/register-converters
+ ["org.elasticsearch.cluster.ClusterName" :exclude [:class] :add {:value #(.value %)}]
+ ["org.elasticsearch.cluster.ClusterState" :exclude [:class]]
+ ["org.elasticsearch.cluster.metadata.MetaData" :exclude [:class]]
+ ["org.elasticsearch.cluster.metadata.AliasMetaData" :exclude [:class]]
+ ["org.elasticsearch.cluster.metadata.IndexMetaData" :exclude [:class]]
+ ["org.elasticsearch.cluster.metadata.MappingMetaData" :exclude [:class]]
+ ["org.elasticsearch.cluster.node.DiscoveryNode" :exclude [:class]]
+ ["org.elasticsearch.common.compress.CompressedString" :exclude [:class] :add {:string #(.string %)}]
+ ["org.elasticsearch.cluster.node.DiscoveryNodes" :exclude [:class]]
+ ["org.elasticsearch.common.settings.ImmutableSettings" :exclude [:class]])
 
 (defn make-listener
   "makes a listener suitable as a callback for requests"
