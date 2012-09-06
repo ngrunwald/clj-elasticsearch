@@ -141,8 +141,7 @@
          ~response
          (let [res# (hash-map
                      ~@(let [gets (for [[kw getter] sig]
-                                    `(~kw (gav/translate (~getter ~response) {:nspace local-ns
-                                                                              :translate-arrays? true})))
+                                    `(~kw (gav/translate (~getter ~response) {:nspace local-ns})))
                              gets (if iterator?
                                     (conj gets  `(:iterator (iterator-seq (.iterator ~response))))
                                     gets)]
