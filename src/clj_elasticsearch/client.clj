@@ -429,7 +429,7 @@
 (gav/register-converters
  ["org.elasticsearch.cluster.ClusterName" :exclude [:class] :add {:value #(.value %)}]
  ["org.elasticsearch.cluster.ClusterState" :exclude [:class]]
- ["org.elasticsearch.cluster.metadata.MetaData" :exclude [:class]]
+ ["org.elasticsearch.cluster.metadata.MetaData" :exclude [:class] :translate-arrays? true]
  ["org.elasticsearch.cluster.metadata.AliasMetaData" :exclude [:class]]
  ["org.elasticsearch.cluster.metadata.IndexMetaData" :exclude [:class]]
  ["org.elasticsearch.cluster.metadata.MappingMetaData" :exclude [:class]]
