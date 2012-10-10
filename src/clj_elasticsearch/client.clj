@@ -14,6 +14,7 @@
            [org.elasticsearch.common.transport InetSocketTransportAddress]
            [org.elasticsearch.action  ActionListener]
            [org.elasticsearch.common.xcontent ToXContent]
+           [org.elasticsearch Version]
            [java.lang.reflect Method Field]))
 
 (def ^{:dynamic true} *client*)
@@ -90,6 +91,22 @@
     :smile (XContentFactory/smileBuilder)
     (XContentFactory/smileBuilder)))
 
+(defn after-0-19?
+  []
+  (try
+    (= "0.19.0" (first (sort [(str Version/CURRENT) "0.19.0"])))
+    (catch Exception _
+      false)))
+
+(defn- make-compatible-decode-smile
+  "produces a compatible fn for backward compatibility with es prior 0.19.0"
+  []
+  (if (after-0-19?)
+    (fn [^FastByteArrayOutputStream os] (json/decode-smile (.. os bytes toBytes) true))
+    (fn [^FastByteArrayOutputStream os] (json/decode-smile (.underlyingBytes os) true))))
+
+(def compatible-decode-smile (make-compatible-decode-smile))
+
 (defn- convert-xcontent
   [^org.elasticsearch.common.xcontent.ToXContent response empty-params & [format]]
   (if (= format :java)
@@ -104,7 +121,7 @@
       (.flush builder)
       (case format
         :json (.toString os "UTF-8")
-        (json/decode-smile (.. os bytes toBytes) true)))))
+        (compatible-decode-smile os)))))
 
 (defn- method->arg
   [^Method method]
