@@ -25,8 +25,10 @@
 
 (use-fixtures :each es-fixture)
 
-(def match-all
-  (generate-string {"query" {"query_string" {"query" "*:*"}}}))
+(def match-all {"query" {"query_string" {"query" "*:*"}}})
+
+(def match-all-string
+  (generate-string match-all))
 
 (deftest es-client
   (is (:id (index-doc {:index "test" :type "tyu"
@@ -43,6 +45,11 @@
     (is (= ["toto" "tutu"] (get-in d [:_source "field1"]))))
   (is (get-in (first
                (get-in (search {:indices ["test"] :types ["tyu"] :extra-source match-all})
+                       [:hits :hits]))
+              [:_source :field1])
+      ["toto" "tutu"])
+  (is (get-in (first
+               (get-in (search {:indices ["test"] :search-type :query-then-fetch :types ["tyu"] :extra-source match-all-string})
                        [:hits :hits]))
               [:_source :field1])
       ["toto" "tutu"]))

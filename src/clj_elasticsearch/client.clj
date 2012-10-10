@@ -15,6 +15,7 @@
            [org.elasticsearch.action  ActionListener]
            [org.elasticsearch.common.xcontent ToXContent]
            [org.elasticsearch Version]
+           [org.elasticsearch.action.search SearchType]
            [java.lang.reflect Method Field]))
 
 (def ^{:dynamic true} *client*)
@@ -288,6 +289,25 @@
   (for [k ks]
     (get h k)))
 
+(defn- extract-source-val
+  [coll k]
+  (if-let [val (get coll k)]
+    (if (map? val) (json/encode val) val)))
+
+(def search-type-map
+  {:count SearchType/COUNT
+   :dfs-query-and-fetch SearchType/DFS_QUERY_AND_FETCH
+   :dfs-query-then-fetch SearchType/DFS_QUERY_THEN_FETCH
+   :query-and-fetch SearchType/QUERY_AND_FETCH
+   :query-then-fetch SearchType/QUERY_THEN_FETCH
+   :scan SearchType/SCAN})
+
+(defn extract-search-type
+  [coll k]
+  (if (keyword? k)
+    (get search-type-map (get coll k))
+    (get coll k)))
+
 (defmacro defn-request
   ^{:private true}
   [fn-name request-class-name cst-args client-class-name]
@@ -320,8 +340,15 @@
                 [~@cst-gensym] (map acoerce (select-vals options# [~@cst-args]))
                 ~request (new ~r-klass ~@cst-gensym)
                 ~options (dissoc options# ~@cst-args)]
-            ~@(for [[k met] signature] `(when (contains? ~options ~k)
-                                          (~met ~request (acoerce (get ~options ~k)))))
+            ~@(for [[k met] signature
+                    :let [extract-val
+                          (cond (#{:extra-source :source} k)
+                                extract-source-val
+                                (= :search-type k)
+                                extract-search-type
+                                :else get)]]
+                `(when (contains? ~options ~k)
+                   (~met ~request (acoerce (~extract-val ~options ~k)))))
             (cond
              (get ~options :debug) ~request
              (get ~options :listener) (~m-name client# ~request (:listener ~options))
@@ -454,6 +481,15 @@
  ["org.elasticsearch.common.compress.CompressedString" :exclude [:class] :add {:string #(.string %)}]
  ["org.elasticsearch.cluster.node.DiscoveryNodes" :exclude [:class]]
  ["org.elasticsearch.common.settings.ImmutableSettings" :exclude [:class]])
+
+(defn- lazy-iterate
+  [hits])
+
+(defn lazy-search
+  [client options step]
+  (let [
+        {:keys [hits]} (search client options)]
+    (lazy-cat (:hits hits) (lazy-cat ))))
 
 (defn make-listener
   "makes a listener suitable as a callback for requests"
