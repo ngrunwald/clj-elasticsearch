@@ -153,7 +153,6 @@
                     {} getters-m)
         response (with-meta (gensym "response") {:tag k-symb})]
     `(defn ~fn-name
-       {:private true}
        [~response & [format#]]
        (if (= format# :java)
          ~response
@@ -184,7 +183,6 @@
         response (gensym "response")]
     `(let [empty# (get-empty-params ~class-name)]
        (defn ~fn-name
-         {:private true}
          [~(with-meta response {:tag klass}) & [format#]]
          (convert-xcontent ~response empty# format#)))))
 
