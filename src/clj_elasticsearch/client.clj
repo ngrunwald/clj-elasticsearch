@@ -22,7 +22,7 @@
 
 (def ^:const local-ns (find-ns 'clj-elasticsearch.client))
 
-(defprotocol Clojurable
+(defprotocol FromJava
   "Protocol for conversion of Response Classes to many formats"
   (convert [response format] "convert response to given format. Format can be :json, :java, or :clj"))
 
@@ -192,7 +192,7 @@
   `(do ~@(for [[nam klass typ] conv-defs]
            `(do (~(if (= typ :xcontent) 'def-xconverter 'def-converter) ~nam ~klass)
                 (extend ~(symbol klass)
-                  Clojurable
+                  FromJava
                   {:convert (fn [response# format#]
                               (~(symbol (str "clj-elasticsearch.client/" nam))
                                response# format#))})))))
@@ -426,7 +426,7 @@
   (convert-update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsResponse" :object))
 
 (extend-type org.elasticsearch.action.get.GetResponse
-   Clojurable
+   FromJava
    (convert [response format] (convert-get response format)))
 
 (def-requests "org.elasticsearch.client.internal.InternalClient"
@@ -470,16 +470,17 @@
   (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" []))
 
 (gav/register-converters
- ["org.elasticsearch.cluster.ClusterName" :exclude [:class] :add {:value #(.value %)}]
- ["org.elasticsearch.cluster.ClusterState" :exclude [:class]]
- ["org.elasticsearch.cluster.metadata.MetaData" :exclude [:class] :translate-arrays? true]
- ["org.elasticsearch.cluster.metadata.AliasMetaData" :exclude [:class]]
- ["org.elasticsearch.cluster.metadata.IndexMetaData" :exclude [:class]]
- ["org.elasticsearch.cluster.metadata.MappingMetaData" :exclude [:class]]
- ["org.elasticsearch.cluster.node.DiscoveryNode" :exclude [:class]]
- ["org.elasticsearch.common.compress.CompressedString" :exclude [:class] :add {:string #(.string %)}]
- ["org.elasticsearch.cluster.node.DiscoveryNodes" :exclude [:class]]
- ["org.elasticsearch.common.settings.ImmutableSettings" :exclude [:class]])
+ {:lazy? false :exclude [:class]}
+ ["org.elasticsearch.cluster.ClusterName" :add {:value #(.value %)}]
+ ["org.elasticsearch.cluster.ClusterState"]
+ ["org.elasticsearch.cluster.metadata.MetaData" :translate-arrays? true]
+ ["org.elasticsearch.cluster.metadata.AliasMetaData"]
+ ["org.elasticsearch.cluster.metadata.IndexMetaData"]
+ ["org.elasticsearch.cluster.metadata.MappingMetaData"]
+ ["org.elasticsearch.cluster.node.DiscoveryNode"]
+ ["org.elasticsearch.common.compress.CompressedString" :add {:string #(.string %)}]
+ ["org.elasticsearch.cluster.node.DiscoveryNodes"]
+ ["org.elasticsearch.common.settings.ImmutableSettings"])
 
 (defn make-listener
   "makes a listener suitable as a callback for requests"
