@@ -6,6 +6,6 @@
   :profiles {:dev {:dependencies [[codox "0.5.0"]
                                   [org.elasticsearch/elasticsearch "0.19.9"]]}}
   :dev-dependencies [[codox "0.5.0"]
-                     [org.elasticsearch/elasticsearch "0.19.9"]]
+                     [org.elasticsearch/elasticsearch "0.19.11"]]
   :repositories { "sonatype.org" "http://oss.sonatype.org/content/repositories/releases/" }
   :url "https://github.com/ngrunwald/clj-elasticsearch")
