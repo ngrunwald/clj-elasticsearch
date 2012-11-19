@@ -36,6 +36,8 @@
                        :id "mid"})))
   (is (> (:successful-shards (refresh-index {:indices ["test"]})) 0))
   (is (= 1 (:count (count-docs {:indices ["test"]}))))
+  (let [status (index-status {:indices ["test"]})]
+    (is (=  1 (get-in status [:indices :test :docs :num_docs]))))
   (let [d (get-doc {:index "test" :type "tyu" :id "mid" :fields ["field1" "field2" "field3"]})]
     (is (nil? (:_source d)))
     (is (= {"tyu" {"foo" "bar"}} (get-in d [:fields "field3"]))))
