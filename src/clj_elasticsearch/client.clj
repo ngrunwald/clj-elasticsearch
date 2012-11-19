@@ -481,15 +481,6 @@
  ["org.elasticsearch.cluster.node.DiscoveryNodes" :exclude [:class]]
  ["org.elasticsearch.common.settings.ImmutableSettings" :exclude [:class]])
 
-(defn- lazy-iterate
-  [hits])
-
-(defn lazy-search
-  [client options step]
-  (let [
-        {:keys [hits]} (search client options)]
-    (lazy-cat (:hits hits) (lazy-cat ))))
-
 (defn make-listener
   "makes a listener suitable as a callback for requests"
   [{:keys [on-failure on-response]}]
