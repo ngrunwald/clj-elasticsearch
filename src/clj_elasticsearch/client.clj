@@ -349,8 +349,8 @@
                    (~met ~request (acoerce (~extract-val ~options ~k)))))
             (cond
              (get ~options :debug) ~request
-             (get ~options :listener) (~m-name ~client ~request (:listener ~options))
-             :else (convert (.actionGet (~m-name ~client ~request)) (:format ~options)))))
+             (get ~options :listener) (~m-name client# ~request (:listener ~options))
+             :else (convert (.actionGet (~m-name client# ~request)) (:format ~options)))))
        ([options#]
           (~fn-name *client* options#)))))
 
