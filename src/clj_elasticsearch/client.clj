@@ -41,7 +41,7 @@
 
 (defn make-node
   "makes a new native node client"
-;  ^Node
+  ^org.elasticsearch.node.Node
   [{:keys [local-mode client-mode load-config cluster-name settings hosts]
     :or {client-mode true
          load-config false
@@ -349,8 +349,8 @@
                    (~met ~request (acoerce (~extract-val ~options ~k)))))
             (cond
              (get ~options :debug) ~request
-             (get ~options :listener) (~m-name client# ~request (:listener ~options))
-             :else (convert (.actionGet (~m-name client# ~request)) (:format ~options)))))
+             (get ~options :listener) (~m-name ~client ~request (:listener ~options))
+             :else (convert (.actionGet (~m-name ~client ~request)) (:format ~options)))))
        ([options#]
           (~fn-name *client* options#)))))
 
@@ -471,14 +471,16 @@
 
 (gav/register-converters
  {:lazy? false :exclude [:class]}
- ["org.elasticsearch.cluster.ClusterName" :add {:value #(.value %)}]
+ ["org.elasticsearch.cluster.ClusterName" :add {:value (fn [^org.elasticsearch.cluster.ClusterName cluster-name]
+                                                         (.value cluster-name))}]
  ["org.elasticsearch.cluster.ClusterState"]
  ["org.elasticsearch.cluster.metadata.MetaData" :translate-arrays? true]
  ["org.elasticsearch.cluster.metadata.AliasMetaData"]
  ["org.elasticsearch.cluster.metadata.IndexMetaData"]
  ["org.elasticsearch.cluster.metadata.MappingMetaData"]
  ["org.elasticsearch.cluster.node.DiscoveryNode"]
- ["org.elasticsearch.common.compress.CompressedString" :add {:string #(.string %)}]
+ ["org.elasticsearch.common.compress.CompressedString" :add {:string (fn [^org.elasticsearch.common.compress.CompressedString s]
+                                                                       (.string s))}]
  ["org.elasticsearch.cluster.node.DiscoveryNodes"]
  ["org.elasticsearch.common.settings.ImmutableSettings"])
 
