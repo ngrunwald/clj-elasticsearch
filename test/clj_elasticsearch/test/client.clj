@@ -30,6 +30,13 @@
 (def match-all-string
   (generate-string match-all))
 
+(deftest utils
+  (is (=
+       (collapse-tree {:discovery {:zen {:ping {:unicast {:hosts ["a" "b"]}
+                                                :multicast {:enabled false}}}}})
+       {"discovery.zen.ping.multicast.enabled" false
+        "discovery.zen.ping.unicast.hosts" ["a" "b"]})))
+
 (deftest es-client
   (is (:id (index-doc {:index "test" :type "tyu"
                        :source (build-document {:field1 ["toto" "tutu"] :field2 42 :field3 {:tyu {:foo "bar"}}})

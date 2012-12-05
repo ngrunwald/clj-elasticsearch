@@ -39,6 +39,28 @@
    [settings]
    (update-settings-builder (ImmutableSettings/settingsBuilder) settings)))
 
+(defn find-terminals
+  [spec]
+  (letfn [(deconstruct [m] (map (fn [[k v]] [(list (name k)) v]) (seq m)))]
+    (loop [todo (deconstruct spec)
+           paths []]
+      (if-let [[path v] (first todo)]
+        (if (map? v)
+          (let [new (map (fn [[p v]]
+                           [(concat path p) v])
+                         (deconstruct v))]
+            (recur (concat (rest todo) new) paths))
+          (recur (rest todo) (conj paths [path v])))
+        paths))))
+
+(defn collapse-tree
+  [m]
+  (let [leaves (find-terminals m)]
+    (reduce
+     (fn [sts [p v]]
+       (assoc sts (str/join "." p) v))
+     {} leaves)))
+
 (defn make-node
   "makes a new native node client"
   ^org.elasticsearch.node.Node
@@ -49,16 +71,24 @@
          settings {}}
     :as args}]
   (let [nodebuilder (NodeBuilder.)
-        host-conf (if hosts {"discovery.zen.ping.unicast.hosts" hosts
-                             "discovery.zen.ping.multicast.enabled" false}
-                      {})]
+        host-conf (collapse-tree
+                   (if hosts
+                     {:discovery {:zen {:ping
+                                        {:unicast {:hosts hosts}
+                                         :multicast {:enabled false}}}}}
+                     {}))
+        flat-settings (if (and
+                           (every? string? (keys settings))
+                           (not-any? map? (vals settings)))
+                        settings
+                        (collapse-tree settings))]
     (doto nodebuilder
       (.client client-mode)
       (.local local-mode)
       (.loadConfigSettings load-config))
     (if cluster-name
       (.clusterName nodebuilder cluster-name))
-    (update-settings-builder (.settings nodebuilder) (merge settings host-conf))
+    (update-settings-builder (.settings nodebuilder) (merge flat-settings host-conf))
     (.node nodebuilder)))
 
 (defn- make-inet-address
