@@ -31,9 +31,10 @@
   (^ImmutableSettings$Builder
    [^ImmutableSettings$Builder builder settings]
    (doseq [[k v] settings]
-     (if (or (vector? v) (list? v))
-       (.putArray builder (name k) (into-array String (map str v)))
-       (.put builder (name k) (str v))))
+     (cond
+      (or (number? v) (true? v) (false? v)) (.put builder (name k) v)
+      (or (vector? v) (list? v)) (.putArray builder (name k) (into-array String (map str v)))
+      :else (.put builder (name k) (str v))))
    builder)
   (^ImmutableSettings$Builder
    [settings]
@@ -88,7 +89,8 @@
       (.loadConfigSettings load-config))
     (if cluster-name
       (.clusterName nodebuilder cluster-name))
-    (update-settings-builder (.settings nodebuilder) (merge flat-settings host-conf))
+    (let [sbuilder (update-settings-builder (.settings nodebuilder) (merge flat-settings host-conf))]
+      (.settings nodebuilder (.build sbuilder)))
     (.node nodebuilder)))
 
 (defn- make-inet-address
@@ -158,7 +160,7 @@
   [^Method method]
   (let [name (.getName method)
         parameter (first (seq (.getParameterTypes method)))
-        conv (str/replace name #"^set|get" "")
+        conv (str/replace name #"^set|^get|^is" "")
         conv (str/lower-case (str/replace conv #"(\p{Lower})(\p{Upper})" "$1-$2"))
         added (if (and parameter (= parameter java.lang.Boolean/TYPE)) (str conv "?") conv)]
     added))
@@ -171,7 +173,7 @@
         methods (.getMethods klass)
         getters-m (filter (fn [^Method m]
                             (let [n (.getName m)]
-                              (and (.startsWith n "get")
+                              (and (re-find #"^get|^is" n)
                                    (not (#{"getClass" "getShardFailures"} n)))))
                           methods)
         iterator? (some #{"iterator"} (map (fn [^Method m] (.getName m)) methods))
@@ -424,6 +426,10 @@
         (json/generate-string data)
         data))))
 
+(defn convert-exists-index
+  [_ res]
+  ())
+
 (def-converters
   (convert-indices-status "org.elasticsearch.action.admin.indices.status.IndicesStatusResponse" :xcontent)
   (convert-analyze "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse" :xcontent)
@@ -435,7 +441,6 @@
   (convert-index "org.elasticsearch.action.index.IndexResponse" :object)
   (convert-percolate "org.elasticsearch.action.percolate.PercolateResponse" :object)
   (convert-optimize "org.elasticsearch.action.admin.indices.optimize.OptimizeResponse" :object)
-  (convert-analyze "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse" :object)
   (convert-clear-cache "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheResponse" :object)
   (convert-create-index "org.elasticsearch.action.admin.indices.create.CreateIndexResponse" :object)
   (convert-delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexResponse" :object)
