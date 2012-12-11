@@ -95,7 +95,7 @@
 (defn after-0-19?
   []
   (try
-    (= "0.19.0" (first (sort [(str Version/CURRENT) "0.19.0"])))
+    (>= (.minor Version/CURRENT) 19)
     (catch Exception _
       false)))
 
@@ -142,6 +142,7 @@
         getters-m (filter (fn [^Method m]
                             (let [n (.getName m)]
                               (and (.startsWith n "get")
+                                   (= 0 (count (.getParameterTypes m)))
                                    (not (#{"getClass" "getShardFailures"} n)))))
                           methods)
         iterator? (some #{"iterator"} (map (fn [^Method m] (.getName m)) methods))
@@ -410,7 +411,7 @@
   (convert-create-index "org.elasticsearch.action.admin.indices.create.CreateIndexResponse" :object)
   (convert-delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexResponse" :object)
   (convert-delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingResponse" :object)
-  (convert-exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsResponse" :object)
+  (convert-exists-index "org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse" :object)
   (convert-flush-request "org.elasticsearch.action.admin.indices.flush.FlushResponse" :object)
   (convert-gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotResponse" :object)
   (convert-put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingResponse" :object)
@@ -449,7 +450,7 @@
   (delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest" [:indices])
   (delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingRequest" [:indices])
   (delete-template "org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateRequest" [:name])
-  (exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsRequest" [:indices])
+  (exists-index "org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest" [:indices])
   (flush-index "org.elasticsearch.action.admin.indices.flush.FlushRequest" [:indices])
   (gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotRequest" [:indices])
   (put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest" [:indices])
