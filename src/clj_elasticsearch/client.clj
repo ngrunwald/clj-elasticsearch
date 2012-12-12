@@ -127,7 +127,7 @@
 (defn after-0-19?
   []
   (try
-    (= "0.19.0" (first (sort [(str Version/CURRENT) "0.19.0"])))
+    (>= (.minor Version/CURRENT) 19)
     (catch Exception _
       false)))
 
@@ -165,39 +165,47 @@
         added (if (and parameter (= parameter java.lang.Boolean/TYPE)) (str conv "?") conv)]
     added))
 
+(defn class-for-name
+  [class-name]
+  (try
+    (Class/forName class-name)
+    (catch ClassNotFoundException _
+      nil)))
+
 (defmacro def-converter
   ^{:private true}
   [fn-name class-name]
-  (let [klass (Class/forName class-name)
-        k-symb (symbol class-name)
-        methods (.getMethods klass)
-        getters-m (filter (fn [^Method m]
-                            (let [n (.getName m)]
-                              (and (re-find #"^get|^is" n)
-                                   (not (#{"getClass" "getShardFailures"} n)))))
-                          methods)
-        iterator? (some #{"iterator"} (map (fn [^Method m] (.getName m)) methods))
-        sig (reduce (fn [acc ^Method m]
-                      (let [m-name (.getName m)]
-                        (assoc acc
-                          (keyword (method->arg m))
-                          (symbol (str "." m-name)))))
-                    {} getters-m)
-        response (with-meta (gensym "response") {:tag k-symb})]
-    `(defn ~fn-name
-       [~response & [format#]]
-       (if (= format# :java)
-         ~response
-         (let [res# (hash-map
-                     ~@(let [gets (for [[kw getter] sig]
-                                    `(~kw (gav/translate (~getter ~response) {:nspace local-ns})))
-                             gets (if iterator?
-                                    (conj gets  `(:iterator (iterator-seq (.iterator ~response))))
-                                    gets)]
-                         (apply concat gets)))]
-           (case format#
-             :json (json/generate-string res#)
-             res#))))))
+  (if-let [klass (class-for-name class-name)]
+    (let [k-symb (symbol class-name)
+          methods (.getMethods klass)
+          getters-m (filter (fn [^Method m]
+                              (let [n (.getName m)]
+                                (and (re-find #"^get|^is" n)
+                                     (= 0 (count (.getParameterTypes m)))
+                                     (not (#{"getClass" "getShardFailures"} n)))))
+                            methods)
+          iterator? (some #{"iterator"} (map (fn [^Method m] (.getName m)) methods))
+          sig (reduce (fn [acc ^Method m]
+                        (let [m-name (.getName m)]
+                          (assoc acc
+                            (keyword (method->arg m))
+                            (symbol (str "." m-name)))))
+                      {} getters-m)
+          response (with-meta (gensym "response") {:tag k-symb})]
+      `(defn ~fn-name
+         [~response & [format#]]
+         (if (= format# :java)
+           ~response
+           (let [res# (hash-map
+                       ~@(let [gets (for [[kw getter] sig]
+                                      `(~kw (gav/translate (~getter ~response) {:nspace local-ns})))
+                               gets (if iterator?
+                                      (conj gets  `(:iterator (iterator-seq (.iterator ~response))))
+                                      gets)]
+                           (apply concat gets)))]
+             (case format#
+               :json (json/generate-string res#)
+               res#)))))))
 
 (defn get-empty-params
   [class-name]
@@ -221,7 +229,8 @@
 (defmacro def-converters
   ^{:private true}
   [& conv-defs]
-  `(do ~@(for [[nam klass typ] conv-defs]
+  `(do ~@(for [[nam klass typ] conv-defs
+               :when (class-for-name klass)]
            `(do (~(if (= typ :xcontent) 'def-xconverter 'def-converter) ~nam ~klass)
                 (extend ~(symbol klass)
                   FromJava
@@ -341,50 +350,50 @@
 (defmacro defn-request
   ^{:private true}
   [fn-name request-class-name cst-args client-class-name]
-  (let [r-klass (Class/forName request-class-name)
-        r-symb (symbol request-class-name)
-        c-symb (symbol client-class-name)
-        sig (request-signature request-class-name)
-        method (get-execute-method request-class-name client-class-name)
-        m-name (symbol (str "." (.getName method)))
-        args (remove (into #{} cst-args) (keys sig))
-        arglists [['options]
-                  ['client `{:keys [~@(map #(-> % name symbol)
-                                           (conj args "listener" "format"))] :as ~'options}]]
-        cst-gensym (take (count cst-args) (repeatedly gensym))
-        signature (reduce (fn [acc [k ^Method v]] (assoc acc k (symbol (str "." (.getName v))))) {} sig)
-        request (with-meta (gensym "request") {:tag r-symb})
-        options (gensym "options")
-        client (with-meta (gensym "client") {:tag c-symb})]
-    `(defn
-       ~fn-name
-       {:doc (format "Required args: %s. Generated from class %s" ~(pr-str cst-args) ~request-class-name)
-        :arglists '(~@arglists)}
-       ([~client options#]
-          (let [client# ~@(case client-class-name
-                            "org.elasticsearch.client.internal.InternalClient" `(~client)
-                            "org.elasticsearch.client.IndicesAdminClient"
-                            `((get-index-admin-client ~client))
-                            "org.elasticsearch.client.ClusterAdminClient"
-                            `((get-cluster-admin-client ~client)))
-                [~@cst-gensym] (map acoerce (select-vals options# [~@cst-args]))
-                ~request (new ~r-klass ~@cst-gensym)
-                ~options (dissoc options# ~@cst-args)]
-            ~@(for [[k met] signature
-                    :let [extract-val
-                          (cond (#{:extra-source :source} k)
-                                extract-source-val
-                                (= :search-type k)
-                                extract-search-type
-                                :else get)]]
-                `(when (contains? ~options ~k)
-                   (~met ~request (acoerce (~extract-val ~options ~k)))))
-            (cond
-             (get ~options :debug) ~request
-             (get ~options :listener) (~m-name client# ~request (:listener ~options))
-             :else (convert (.actionGet (~m-name client# ~request)) (:format ~options)))))
-       ([options#]
-          (~fn-name *client* options#)))))
+  (if-let [r-klass (class-for-name request-class-name)]
+    (let [r-symb (symbol request-class-name)
+          c-symb (symbol client-class-name)
+          sig (request-signature request-class-name)
+          method (get-execute-method request-class-name client-class-name)
+          m-name (symbol (str "." (.getName method)))
+          args (remove (into #{} cst-args) (keys sig))
+          arglists [['options]
+                    ['client `{:keys [~@(map #(-> % name symbol)
+                                             (conj args "listener" "format"))] :as ~'options}]]
+          cst-gensym (take (count cst-args) (repeatedly gensym))
+          signature (reduce (fn [acc [k ^Method v]] (assoc acc k (symbol (str "." (.getName v))))) {} sig)
+          request (with-meta (gensym "request") {:tag r-symb})
+          options (gensym "options")
+          client (with-meta (gensym "client") {:tag c-symb})]
+      `(defn
+         ~fn-name
+         {:doc (format "Required args: %s. Generated from class %s" ~(pr-str cst-args) ~request-class-name)
+          :arglists '(~@arglists)}
+         ([~client options#]
+            (let [client# ~@(case client-class-name
+                              "org.elasticsearch.client.internal.InternalClient" `(~client)
+                              "org.elasticsearch.client.IndicesAdminClient"
+                              `((get-index-admin-client ~client))
+                              "org.elasticsearch.client.ClusterAdminClient"
+                              `((get-cluster-admin-client ~client)))
+                  [~@cst-gensym] (map acoerce (select-vals options# [~@cst-args]))
+                  ~request (new ~r-klass ~@cst-gensym)
+                  ~options (dissoc options# ~@cst-args)]
+              ~@(for [[k met] signature
+                      :let [extract-val
+                            (cond (#{:extra-source :source} k)
+                                  extract-source-val
+                                  (= :search-type k)
+                                  extract-search-type
+                                  :else get)]]
+                  `(when (contains? ~options ~k)
+                     (~met ~request (acoerce (~extract-val ~options ~k)))))
+              (cond
+               (get ~options :debug) ~request
+               (get ~options :listener) (~m-name client# ~request (:listener ~options))
+               :else (convert (.actionGet (~m-name client# ~request)) (:format ~options)))))
+         ([options#]
+            (~fn-name *client* options#))))))
 
 (defmacro def-requests
   ^{:private true}
@@ -426,10 +435,6 @@
         (json/generate-string data)
         data))))
 
-(defn convert-exists-index
-  [_ res]
-  ())
-
 (def-converters
   (convert-indices-status "org.elasticsearch.action.admin.indices.status.IndicesStatusResponse" :xcontent)
   (convert-analyze "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse" :xcontent)
@@ -445,7 +450,10 @@
   (convert-create-index "org.elasticsearch.action.admin.indices.create.CreateIndexResponse" :object)
   (convert-delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexResponse" :object)
   (convert-delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingResponse" :object)
+  ;; for es < 0.20
   (convert-exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsResponse" :object)
+  ;; for es > 0.20
+  (convert-exists-index "org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse" :object)
   (convert-flush-request "org.elasticsearch.action.admin.indices.flush.FlushResponse" :object)
   (convert-gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotResponse" :object)
   (convert-put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingResponse" :object)
@@ -484,7 +492,10 @@
   (delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest" [:indices])
   (delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingRequest" [:indices])
   (delete-template "org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateRequest" [:name])
+  ;; for es < 0.20
   (exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsRequest" [:indices])
+  ;; for es > 0.20
+  (exists-index "org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest" [:indices])
   (flush-index "org.elasticsearch.action.admin.indices.flush.FlushRequest" [:indices])
   (gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotRequest" [:indices])
   (put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest" [:indices])

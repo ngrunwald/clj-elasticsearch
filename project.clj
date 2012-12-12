@@ -4,7 +4,10 @@
                  [cheshire "5.0.0"]
                  [gavagai "0.2.0"]]
   :plugins [[codox "0.6.3"]]
-  :profiles {:dev {:dependencies [[org.elasticsearch/elasticsearch "0.19.9"]]}}
+  :profiles {:dev {:dependencies [[org.elasticsearch/elasticsearch "0.20.1"]]}
+             :0.20 {:dependencies [[org.elasticsearch/elasticsearch "0.20.1"]]}
+             :0.19 {:dependencies [[org.elasticsearch/elasticsearch "0.19.9"]]}
+             :0.18 {:dependencies [[org.elasticsearch/elasticsearch "0.18.0"]]}}
   :dev-dependencies [[codox "0.6.3"]
                      [org.elasticsearch/elasticsearch "0.19.9"]]
   :repositories {"sonatype.org" "http://oss.sonatype.org/content/repositories/releases/"}

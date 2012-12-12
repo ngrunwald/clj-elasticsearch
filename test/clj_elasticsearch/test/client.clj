@@ -25,7 +25,7 @@
 
 (use-fixtures :each es-fixture)
 
-(def match-all {"query" {"query_string" {"query" "*:*"}}})
+(def match-all {:query {:match_all {}}})
 
 (def match-all-string
   (generate-string match-all))
@@ -40,7 +40,8 @@
 (deftest es-client
   (is (false? (:exists (exists-index {:indices ["test"]}))))
   (is (:id (index-doc {:index "test" :type "tyu"
-                       :source (build-document {:field1 ["toto" "tutu"] :field2 42 :field3 {:tyu {:foo "bar"}}})
+                       :source (build-document {:field1 ["toto" "tutu"] :field2 42
+                                                :field3 {:tyu {:foo "bar"}}})
                        :id "mid"})))
   (is (> (:successful-shards (refresh-index {:indices ["test"]})) 0))
   (is (true? (:exists (exists-index {:indices ["test"]}))))
@@ -64,8 +65,10 @@
                        [:hits :hits]))
               [:_source :field1])
       ["toto" "tutu"])
-  (is (get-in (first
-               (get-in (search {:indices ["test"] :search-type :query-then-fetch :types ["tyu"] :extra-source match-all-string})
+  (is (get-in
+       (first
+        (get-in (search {:indices ["test"] :search-type :query-then-fetch
+                         :types ["tyu"] :extra-source match-all-string})
                        [:hits :hits]))
               [:_source :field1])
       ["toto" "tutu"]))
