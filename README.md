@@ -26,10 +26,20 @@ You can also use the functions asynchronously by providing a callback listener w
 ```clojure
 (count-docs es {:indices ["test"]
                 :listener (make-listener
-                              {:on-failure (fn [e] (throw e))
+                              {:on-failure (fn [e] (error e "error in es listener))
                                :on-success (fn [res] (println (convert res :clj)))})})
 ```
+or in a simpler way with sane defaults:
+
+```clojure
+(count-docs es {:indices ["test"]
+                :listener (listener (fn [res] (println (:count res))))})
+```
 A bit more details can be found in the tests.
+
+## Compatibility
+
+clj-elasticsearch is tested on all major versions from elasticsearch 0.18.0 onward. It might or might not on older versions.
 
 ## See Also
 
