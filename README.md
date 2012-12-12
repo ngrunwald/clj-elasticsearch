@@ -16,7 +16,7 @@ For the most basic use case:
 (def index-res (index-doc es {:index "test" :type "test"
                          :source (build-doc {:field1 "foo" :field2 42})}))
 (def nb-docs (:count (count-docs {:indices ["test"]})))
-(def match-all "{\"query\":{\"query_string\":{\"query\":\"*:*\"}}}")
+(def match-all {:query {:match_all {}}})
 (def res (get-in (search es {:indices ["test"] :types ["test"] :extra-source match-all}) [:hits :hits]))
 ```
 Vectors and hashes are converted to arrays. See the doc strings for the arguments used by each method and the javadocs for more details about their use. A convert function can be used to try to translate the returned objects to Clojure or other formats. It can be sprecified by the :format key when calling the various API methods.
