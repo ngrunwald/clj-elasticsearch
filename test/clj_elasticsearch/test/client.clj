@@ -45,6 +45,11 @@
   (is (> (:successful-shards (refresh-index {:indices ["test"]})) 0))
   (is (true? (:exists (exists-index {:indices ["test"]}))))
   (is (= 1 (:count (count-docs {:indices ["test"]}))))
+  (let [c (atom nil)
+        l (listener (fn [r] (reset! c (:count r))))]
+    (count-docs {:indices ["test"] :listener l})
+    (Thread/sleep 100)
+    (is (= 1 @c)))
   (let [status (index-status {:indices ["test"]})]
     (is (=  1 (get-in status [:indices :test :docs :num_docs]))))
   (let [d (get-doc {:index "test" :type "tyu" :id "mid" :fields ["field1" "field2" "field3"]})]

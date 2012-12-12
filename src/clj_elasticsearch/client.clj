@@ -521,7 +521,16 @@
 
 (defn make-listener
   "makes a listener suitable as a callback for requests"
-  [{:keys [on-failure on-response]}]
+  [{:keys [on-failure on-response format]
+    :or {format :clj
+         on-failure (fn [e]
+                      ;; TODO plug in es log
+                      (println "error in listener:" e))}}]
   (proxy [ActionListener] []
     (onFailure [e] (on-failure e))
-    (onResponse [r] (on-response r))))
+    (onResponse [r] (on-response (convert r format)))))
+
+(defn listener
+  "easy to use listener with reasonable defaults"
+  [on-response]
+  (make-listener {:on-response on-response :format :clj}))
