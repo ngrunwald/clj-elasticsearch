@@ -331,7 +331,7 @@
 (defn- extract-source-val
   [coll k]
   (if-let [val (get coll k)]
-    (if (map? val) (json/encode val) val)))
+    (if (map? val) (json/encode-smile val) val)))
 
 (def search-type-map
   {:count SearchType/COUNT

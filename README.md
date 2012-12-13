@@ -14,7 +14,7 @@ For the most basic use case:
 (def es (make-client :transport {:hosts ["localhost:9300"] :cluster-name "elasticsearch"}))
 
 (def index-res (index-doc es {:index "test" :type "test"
-                         :source (build-doc {:field1 "foo" :field2 42})}))
+                              :source {:field1 "foo" :field2 42}}))
 (def nb-docs (:count (count-docs {:indices ["test"]})))
 (def match-all {:query {:match_all {}}})
 (def res (get-in (search es {:indices ["test"] :types ["test"] :extra-source match-all}) [:hits :hits]))
@@ -26,7 +26,7 @@ You can also use the functions asynchronously by providing a callback listener w
 ```clojure
 (count-docs es {:indices ["test"]
                 :listener (make-listener
-                              {:on-failure (fn [e] (error e "error in es listener))
+                              {:on-failure (fn [e] (error e "error in es listener"))
                                :on-success (fn [res] (println (convert res :clj)))})})
 ```
 or in a simpler way with sane defaults:
@@ -39,7 +39,7 @@ A bit more details can be found in the tests.
 
 ## Compatibility
 
-clj-elasticsearch is tested on all major versions from elasticsearch 0.18.0 onward. It might or might not on older versions.
+clj-elasticsearch is tested on all major versions from elasticsearch 0.18.0 onward. It might or might not work on older versions.
 
 ## See Also
 
