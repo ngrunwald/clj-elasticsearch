@@ -434,6 +434,7 @@
   (index-doc "org.elasticsearch.action.index.IndexRequest" [])
   (search "org.elasticsearch.action.search.SearchRequest" [])
   (get-doc "org.elasticsearch.action.get.GetRequest" [:index])
+  (update-doc "org.elasticsearch.action.update.UpdateRequest" [:index :type :id])
   (count-docs "org.elasticsearch.action.count.CountRequest" [:indices])
   (delete-doc "org.elasticsearch.action.delete.DeleteRequest" [])
   (delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest" [])
