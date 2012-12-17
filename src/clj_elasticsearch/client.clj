@@ -404,6 +404,7 @@
   (convert-delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryResponse" :object)
   (convert-delete-template "org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateResponse" :object)
   (convert-index "org.elasticsearch.action.index.IndexResponse" :object)
+  (convert-update "org.elasticsearch.action.update.UpdateResponse" :object)
   (convert-percolate "org.elasticsearch.action.percolate.PercolateResponse" :object)
   (convert-optimize "org.elasticsearch.action.admin.indices.optimize.OptimizeResponse" :object)
   (convert-analyze "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse" :object)
