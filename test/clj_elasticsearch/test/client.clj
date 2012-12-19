@@ -71,4 +71,19 @@
                          :types ["tyu"] :extra-source match-all-string})
                        [:hits :hits]))
               [:_source :field1])
-      ["toto" "tutu"]))
+      ["toto" "tutu"])
+  (let [payload {:index "test" :type "vvv"
+                 :source {:foo "bar"}
+                 :id "neo"}
+        docv1 (index-doc payload)
+        flag (atom false)
+        _ (atomic-update-from-source (fn [o] (when-not @flag
+                                              (index-doc (assoc payload :ooh "sneaky"))
+                                              (reset! flag true))
+                                       (assoc o :bar "baz"))
+                                     {:index "test" :type "vvv" :id "neo"})
+        _ (atomic-update-from-source (fn [_] {:foo "bar"}) {:index "test" :type "vvv" :id "geo"})]
+    (is {:foo "bar" :bar "baz" :ooh "sneaky"}
+        (:_source (get-doc {:index "test" :type "vvv" :id "neo"})))
+    (is {:foo "bar"}
+        (:_source (get-doc {:index "test" :type "vvv" :id "geo"})))))

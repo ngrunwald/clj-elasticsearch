@@ -1,8 +1,8 @@
 (defproject clj-elasticsearch "0.3.4-SNAPSHOT"
   :description "Native Java API client wrapper for Elasticsearch"
   :dependencies [[org.clojure/clojure "1.4.0"]
-                 [cheshire "5.0.0"]
-                 [gavagai "0.2.0"]]
+                 [cheshire "5.0.1"]
+                 [gavagai "0.2.1"]]
   :plugins [[codox "0.6.3"]]
   :profiles {:dev {:dependencies [[org.elasticsearch/elasticsearch "0.20.1"]]}
              :0.20 {:dependencies [[org.elasticsearch/elasticsearch "0.20.1"]]}

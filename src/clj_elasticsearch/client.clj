@@ -545,3 +545,29 @@
   "easy to use listener with reasonable defaults"
   [on-response]
   (make-listener {:on-response on-response :format :clj}))
+
+(defn atomic-update-from-source
+  "atomically updates a document with an optimistic concurrency control policy.
+   The provided function will receive the _source field of the doc as param,
+   or nil if the doc id does not exist. If the function returns a map, it will
+   become the new value, else nothing will happen. Any additional values you
+   want to pass to the requests have to be set into the opts param."
+  ([f client opts]
+     (let [full-opts (assoc opts :preference "_primary")
+           {:keys [_source _version _id]} (get-doc client full-opts)]
+       (if _id
+         (let [new-source (f _source)
+               payload (assoc opts
+                         :source new-source :version _version
+                         :id _id)
+               result (try
+                        (index-doc client payload)
+                        (catch org.elasticsearch.index.engine.VersionConflictEngineException _
+                          nil))]
+           (if result
+             result
+             (recur f client opts)))
+         (let [source (f nil)]
+           (when (map? source)
+             (index-doc client (assoc opts :source source)))))))
+  ([f opts] (atomic-update-from-source f *client* opts)))
