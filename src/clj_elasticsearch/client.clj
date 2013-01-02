@@ -156,6 +156,26 @@
         :json (.toString os "UTF-8")
         (compatible-decode-smile os)))))
 
+(def translator
+  (gav/register-converters
+   {:lazy? false :exclude [:class]}
+   [["org.elasticsearch.cluster.ClusterName"
+     :add {:value (fn [^org.elasticsearch.cluster.ClusterName cluster-name]
+                    (.value cluster-name))}]
+    ["org.elasticsearch.cluster.ClusterState"]
+    ["org.elasticsearch.cluster.metadata.MetaData" :translate-seqs? true]
+    ["org.elasticsearch.cluster.metadata.AliasMetaData"]
+    ["org.elasticsearch.cluster.metadata.IndexMetaData"]
+    ["org.elasticsearch.cluster.metadata.MappingMetaData"]
+    ["org.elasticsearch.cluster.node.DiscoveryNode"]
+    ["org.elasticsearch.common.compress.CompressedString"
+     :add {:string (fn [^org.elasticsearch.common.compress.CompressedString s]
+                     (.string s))}]
+    ["org.elasticsearch.cluster.node.DiscoveryNodes"]
+    ["org.elasticsearch.common.settings.ImmutableSettings"]]))
+
+(def translate (partial gav/translate translator))
+
 (defn- method->arg
   [^Method method]
   (let [name (.getName method)
@@ -198,7 +218,7 @@
            ~response
            (let [res# (hash-map
                        ~@(let [gets (for [[kw getter] sig]
-                                      `(~kw (gav/translate (~getter ~response) {:nspace local-ns})))
+                                      `(~kw (translate (~getter ~response) {})))
                                gets (if iterator?
                                       (conj gets  `(:iterator (iterator-seq (.iterator ~response))))
                                       gets)]
@@ -514,21 +534,6 @@
   (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids])
   (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids])
   (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" []))
-
-(gav/register-converters
- {:lazy? false :exclude [:class]}
- ["org.elasticsearch.cluster.ClusterName" :add {:value (fn [^org.elasticsearch.cluster.ClusterName cluster-name]
-                                                         (.value cluster-name))}]
- ["org.elasticsearch.cluster.ClusterState"]
- ["org.elasticsearch.cluster.metadata.MetaData" :translate-arrays? true]
- ["org.elasticsearch.cluster.metadata.AliasMetaData"]
- ["org.elasticsearch.cluster.metadata.IndexMetaData"]
- ["org.elasticsearch.cluster.metadata.MappingMetaData"]
- ["org.elasticsearch.cluster.node.DiscoveryNode"]
- ["org.elasticsearch.common.compress.CompressedString" :add {:string (fn [^org.elasticsearch.common.compress.CompressedString s]
-                                                                       (.string s))}]
- ["org.elasticsearch.cluster.node.DiscoveryNodes"]
- ["org.elasticsearch.common.settings.ImmutableSettings"])
 
 (defn make-listener
   "makes a listener suitable as a callback for requests"
