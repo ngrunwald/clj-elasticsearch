@@ -241,9 +241,9 @@
                :throw? false]
               ;; for es > 0.20
               ["org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse"
-               :throw? false]]))
-        translator (gav/add-converter translator org.elasticsearch.action.get.GetResponse
-                                      convert-get {:throw? false})]
+               :throw? false]])
+            (gav/add-converter org.elasticsearch.action.get.GetResponse
+                               convert-get {:throw? false}))]
     (reduce
      (fn [tr class-name]
        (if-let [xconverter (make-xconverter class-name)]
@@ -278,40 +278,6 @@
     (Class/forName class-name)
     (catch ClassNotFoundException _
       nil)))
-
-(defn make-converter
-  [class-name]
-  (if-let [klass (class-for-name class-name)]
-    (let [k-symb (symbol class-name)
-          methods (.getMethods klass)
-          getters-m (filter (fn [^Method m]
-                              (let [n (.getName m)]
-                                (and (re-find #"^get|^is" n)
-                                     (= 0 (count (.getParameterTypes m)))
-                                     (not (#{"getClass" "getShardFailures"} n)))))
-                            methods)
-          iterator? (some #{"iterator"} (map (fn [^Method m] (.getName m)) methods))
-          getters (reduce (fn [acc ^Method m]
-                            (let [m-name (.getName m)]
-                              (assoc acc
-                                (keyword (method->arg m))
-                                m)))
-                          {} getters-m)]
-      (fn convert
-        ([response] (convert response :clj))
-        ([response format]
-           (if (= format :java)
-           response
-           (let [res (reduce (fn [acc [k getter]]
-                               (assoc! acc k (gav/invoke-method getter response)))
-                             (transient {}) getters)
-                 res (if iterator?
-                       (assoc! res :iterator (iterator-seq (.iterator response)))
-                       res)
-                 res (persistent! res)]
-             (case format
-               :json (json/generate-string res)
-               res))))))))
 
 (defn make-client
   "creates a client of given type (:node or :transport) and spec"

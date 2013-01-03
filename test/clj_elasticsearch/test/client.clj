@@ -38,13 +38,13 @@
         "discovery.zen.ping.unicast.hosts" ["a" "b"]})))
 
 (deftest es-client
-  (is (false? (:exists (exists-index {:indices ["test"]}))))
+  (is (false? (:exists? (exists-index {:indices ["test"]}))))
   (is (:id (index-doc {:index "test" :type "tyu"
                        :source {:field1 ["toto" "tutu"] :field2 42
                                 :field3 {:tyu {:foo "bar"}}}
                        :id "mid"})))
   (is (> (:successful-shards (refresh-index {:indices ["test"]})) 0))
-  (is (true? (:exists (exists-index {:indices ["test"]}))))
+  (is (true? (:exists? (exists-index {:indices ["test"]}))))
   (is (= 1 (:count (count-docs {:indices ["test"]}))))
   (let [c (atom nil)
         l (listener (fn [r] (reset! c (:count r))))]
