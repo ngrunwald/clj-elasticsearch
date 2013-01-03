@@ -20,12 +20,6 @@
 
 (def ^{:dynamic true} *client*)
 
-(def ^:const local-ns (find-ns 'clj-elasticsearch.client))
-
-(defprotocol FromJava
-  "Protocol for conversion of Response Classes to many formats"
-  (convert [response format] "convert response to given format. Format can be :json, :java, or :clj"))
-
 (defn update-settings-builder
   "creates or updates a settingsBuilder with the given hash-map"
   (^ImmutableSettings$Builder
@@ -132,7 +126,7 @@
       false)))
 
 (defn- make-compatible-decode-smile
-  "produces a compatible fn for backward compatibility with es prior 0.19.0"
+  "produces a fn for backward compatibility with es prior 0.19.0"
   []
   (if (after-0-19?)
     (fn [^FastByteArrayOutputStream os] (json/decode-smile (.. os bytes toBytes) true))
@@ -140,41 +134,134 @@
 
 (def compatible-decode-smile (make-compatible-decode-smile))
 
+(defn- convert-source
+  [src]
+  (cond
+   (instance? java.util.HashMap src) (into {} (map (fn [^java.util.Map$Entry e] [(.getKey e)
+                                                           (convert-source (.getValue e))]) src))
+   (instance? java.util.ArrayList src) (into [] (map convert-source src))
+   :else src))
+
+(defn- convert-fields
+  [^java.util.HashMap hm]
+  (into {} (map (fn [^org.elasticsearch.index.get.GetField f]
+                  [(.getName f) (convert-source (.getValue f))]) (.values hm))))
+
+(defn- convert-get
+  [_ ^org.elasticsearch.action.get.GetResponse response _]
+  (let [data (if (.exists response)
+               {:_index (.getIndex response)
+                :_type (.getType response)
+                :_id (.getId response)
+                :_version (.getVersion response)})
+        data (if-not (.isSourceEmpty response)
+               (assoc data :_source (convert-source (.sourceAsMap response)))
+               data)
+        data (let [fields (.getFields response)]
+               (if-not (empty? fields)
+                 (assoc data :fields (convert-fields fields))
+                 data))]
+    data))
+
+(defn get-empty-params
+  [class-name]
+  (let [klass (Class/forName class-name)
+        ^Field empty-params-field (first (filter (fn [^Field m]
+                                            (= (.getName m) "EMPTY_PARAMS"))
+                                          (.getFields klass)))
+        empty-params (.get empty-params-field klass)]
+    empty-params))
+
 (defn- convert-xcontent
-  [^org.elasticsearch.common.xcontent.ToXContent response empty-params & [format]]
-  (if (= format :java)
-    response
-    (let [os (FastByteArrayOutputStream.)
-          builder (if (= format :json)
-                    (XContentFactory/jsonBuilder os)
-                    (XContentFactory/smileBuilder os))]
-      (.startObject builder)
-      (.toXContent response builder empty-params)
-      (.endObject builder)
-      (.flush builder)
-      (case format
-        :json (.toString os "UTF-8")
-        (compatible-decode-smile os)))))
+  [^org.elasticsearch.common.xcontent.ToXContent response empty-params]
+  (let [os (FastByteArrayOutputStream.)
+        builder (if (= format :json)
+                  (XContentFactory/jsonBuilder os)
+                  (XContentFactory/smileBuilder os))]
+    (.startObject builder)
+    (.toXContent response builder empty-params)
+    (.endObject builder)
+    (.flush builder)
+    (compatible-decode-smile os)))
+
+(defn- make-xconverter
+  [class-name]
+  (if-let [klass (gav/class-for-name class-name {:throw? false})]
+    (let [empty (get-empty-params class-name)]
+      (fn convert
+        [_ response _] (convert-xcontent response empty)))))
 
 (def translator
-  (gav/register-converters
-   {:lazy? false :exclude [:class]}
-   [["org.elasticsearch.cluster.ClusterName"
-     :add {:value (fn [^org.elasticsearch.cluster.ClusterName cluster-name]
-                    (.value cluster-name))}]
-    ["org.elasticsearch.cluster.ClusterState"]
-    ["org.elasticsearch.cluster.metadata.MetaData" :translate-seqs? true]
-    ["org.elasticsearch.cluster.metadata.AliasMetaData"]
-    ["org.elasticsearch.cluster.metadata.IndexMetaData"]
-    ["org.elasticsearch.cluster.metadata.MappingMetaData"]
-    ["org.elasticsearch.cluster.node.DiscoveryNode"]
-    ["org.elasticsearch.common.compress.CompressedString"
-     :add {:string (fn [^org.elasticsearch.common.compress.CompressedString s]
-                     (.string s))}]
-    ["org.elasticsearch.cluster.node.DiscoveryNodes"]
-    ["org.elasticsearch.common.settings.ImmutableSettings"]]))
+  (let [translator
+        (-> (gav/make-translator)
+            (gav/register-converters
+             {:lazy? false :exclude [:class]}
+             [["org.elasticsearch.cluster.ClusterName"
+               :add {:value (fn [^org.elasticsearch.cluster.ClusterName cluster-name]
+                              (.value cluster-name))}]
+              ["org.elasticsearch.cluster.ClusterState"]
+              ["org.elasticsearch.cluster.metadata.MetaData" :translate-seqs? true]
+              ["org.elasticsearch.cluster.metadata.AliasMetaData"]
+              ["org.elasticsearch.cluster.metadata.IndexMetaData"]
+              ["org.elasticsearch.cluster.metadata.MappingMetaData"]
+              ["org.elasticsearch.cluster.node.DiscoveryNode"]
+              ["org.elasticsearch.common.compress.CompressedString"
+               :add {:string (fn [^org.elasticsearch.common.compress.CompressedString s]
+                               (.string s))}]
+              ["org.elasticsearch.cluster.node.DiscoveryNodes"]
+              ["org.elasticsearch.common.settings.ImmutableSettings"]])
+            (gav/register-converters
+             {:lazy? false :exclude [:class] :translate-seqs? true}
+             [["org.elasticsearch.action.count.CountResponse"]
+              ["org.elasticsearch.action.delete.DeleteResponse"]
+              ["org.elasticsearch.action.deletebyquery.DeleteByQueryResponse"]
+              ["org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateResponse"]
+              ["org.elasticsearch.action.index.IndexResponse"]
+              ["org.elasticsearch.action.percolate.PercolateResponse"]
+              ["org.elasticsearch.action.admin.indices.optimize.OptimizeResponse"]
+              ["org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheResponse"]
+              ["org.elasticsearch.action.admin.indices.create.CreateIndexResponse"]
+              ["org.elasticsearch.action.admin.indices.delete.DeleteIndexResponse"]
+              ["org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingResponse"]
+              ["org.elasticsearch.action.admin.indices.flush.FlushResponse"]
+              ["org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotResponse"]
+              ["org.elasticsearch.action.admin.indices.mapping.put.PutMappingResponse"]
+              ["org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateResponse"]
+              ["org.elasticsearch.action.admin.indices.refresh.RefreshResponse"]
+              ["org.elasticsearch.action.admin.indices.settings.UpdateSettingsResponse"]
+              ["org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse"]
+              ["org.elasticsearch.action.admin.cluster.state.ClusterStateResponse"]
+              ["org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse"]
+              ["org.elasticsearch.action.admin.cluster.node.restart.NodesRestartResponse"]
+              ["org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownResponse"]
+              ["org.elasticsearch.action.admin.cluster.node.stats.NodesStatsResponse"]
+              ["org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsResponse"]
+              ;; for es < 0.20
+              ["org.elasticsearch.action.admin.indices.exists.IndicesExistsResponse"
+               :throw? false]
+              ;; for es > 0.20
+              ["org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse"
+               :throw? false]]))
+        translator (gav/add-converter translator org.elasticsearch.action.get.GetResponse
+                                      convert-get {:throw? false})]
+    (reduce
+     (fn [tr class-name]
+       (if-let [xconverter (make-xconverter class-name)]
+         (gav/add-converter tr class-name xconverter {:throw? false})
+         tr))
+     translator ["org.elasticsearch.action.search.SearchResponse"
+                 "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse"
+                 "org.elasticsearch.action.admin.indices.status.IndicesStatusResponse"])))
 
-(def translate (partial gav/translate translator))
+(def convert* (partial gav/translate translator))
+
+(defn convert
+  ([response format]
+     (if (= format :java)
+       response
+       (convert* response {})))
+  ([response]
+     (convert* response {})))
 
 (defn- method->arg
   [^Method method]
@@ -192,9 +279,8 @@
     (catch ClassNotFoundException _
       nil)))
 
-(defmacro def-converter
-  ^{:private true}
-  [fn-name class-name]
+(defn make-converter
+  [class-name]
   (if-let [klass (class-for-name class-name)]
     (let [k-symb (symbol class-name)
           methods (.getMethods klass)
@@ -205,58 +291,27 @@
                                      (not (#{"getClass" "getShardFailures"} n)))))
                             methods)
           iterator? (some #{"iterator"} (map (fn [^Method m] (.getName m)) methods))
-          sig (reduce (fn [acc ^Method m]
-                        (let [m-name (.getName m)]
-                          (assoc acc
-                            (keyword (method->arg m))
-                            (symbol (str "." m-name)))))
-                      {} getters-m)
-          response (with-meta (gensym "response") {:tag k-symb})]
-      `(defn ~fn-name
-         [~response & [format#]]
-         (if (= format# :java)
-           ~response
-           (let [res# (hash-map
-                       ~@(let [gets (for [[kw getter] sig]
-                                      `(~kw (translate (~getter ~response) {})))
-                               gets (if iterator?
-                                      (conj gets  `(:iterator (iterator-seq (.iterator ~response))))
-                                      gets)]
-                           (apply concat gets)))]
-             (case format#
-               :json (json/generate-string res#)
-               res#)))))))
-
-(defn get-empty-params
-  [class-name]
-  (let [klass (Class/forName class-name)
-        ^Field empty-params-field (first (filter (fn [^Field m]
-                                            (= (.getName m) "EMPTY_PARAMS"))
-                                          (.getFields klass)))
-        empty-params (.get empty-params-field klass)]
-    empty-params))
-
-(defmacro def-xconverter
-  ^{:private true}
-  [fn-name class-name]
-  (let [klass (Class/forName class-name)
-        response (gensym "response")]
-    `(let [empty# (get-empty-params ~class-name)]
-       (defn ~fn-name
-         [~(with-meta response {:tag klass}) & [format#]]
-         (convert-xcontent ~response empty# format#)))))
-
-(defmacro def-converters
-  ^{:private true}
-  [& conv-defs]
-  `(do ~@(for [[nam klass typ] conv-defs
-               :when (class-for-name klass)]
-           `(do (~(if (= typ :xcontent) 'def-xconverter 'def-converter) ~nam ~klass)
-                (extend ~(symbol klass)
-                  FromJava
-                  {:convert (fn [response# format#]
-                              (~(symbol (str "clj-elasticsearch.client/" nam))
-                               response# format#))})))))
+          getters (reduce (fn [acc ^Method m]
+                            (let [m-name (.getName m)]
+                              (assoc acc
+                                (keyword (method->arg m))
+                                m)))
+                          {} getters-m)]
+      (fn convert
+        ([response] (convert response :clj))
+        ([response format]
+           (if (= format :java)
+           response
+           (let [res (reduce (fn [acc [k getter]]
+                               (assoc! acc k (gav/invoke-method getter response)))
+                             (transient {}) getters)
+                 res (if iterator?
+                       (assoc! res :iterator (iterator-seq (.iterator response)))
+                       res)
+                 res (persistent! res)]
+             (case format
+               :json (json/generate-string res)
+               res))))))))
 
 (defn make-client
   "creates a client of given type (:node or :transport) and spec"
@@ -421,76 +476,6 @@
   `(do ~@(map (fn [req-def]
                 `(defn-request ~@(concat req-def [client-class-name])))
               request-defs)))
-
-(defn- convert-source
-  [src]
-  (cond
-   (instance? java.util.HashMap src) (into {} (map (fn [^java.util.Map$Entry e] [(.getKey e)
-                                                           (convert-source (.getValue e))]) src))
-   (instance? java.util.ArrayList src) (into [] (map convert-source src))
-   :else src))
-
-(defn- convert-fields
-  [^java.util.HashMap hm]
-  (into {} (map (fn [^org.elasticsearch.index.get.GetField f]
-                  [(.getName f) (convert-source (.getValue f))]) (.values hm))))
-
-(defn- convert-get
-  [^org.elasticsearch.action.get.GetResponse response & [format]]
-  (if (= format :java)
-    response
-    (let [data (if (.exists response)
-                 {:_index (.getIndex response)
-                  :_type (.getType response)
-                  :_id (.getId response)
-                  :_version (.getVersion response)})
-          data (if-not (.isSourceEmpty response)
-                 (assoc data :_source (convert-source (.sourceAsMap response)))
-                 data)
-          data (let [fields (.getFields response)]
-                 (if-not (empty? fields)
-                   (assoc data :fields (convert-fields fields))
-                   data))]
-      (if (= format :json)
-        (json/generate-string data)
-        data))))
-
-(def-converters
-  (convert-indices-status "org.elasticsearch.action.admin.indices.status.IndicesStatusResponse" :xcontent)
-  (convert-analyze "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse" :xcontent)
-  (convert-search "org.elasticsearch.action.search.SearchResponse" :xcontent)
-  (convert-count "org.elasticsearch.action.count.CountResponse" :object)
-  (convert-delete "org.elasticsearch.action.delete.DeleteResponse" :object)
-  (convert-delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryResponse" :object)
-  (convert-delete-template "org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateResponse" :object)
-  (convert-index "org.elasticsearch.action.index.IndexResponse" :object)
-  (convert-percolate "org.elasticsearch.action.percolate.PercolateResponse" :object)
-  (convert-optimize "org.elasticsearch.action.admin.indices.optimize.OptimizeResponse" :object)
-  (convert-clear-cache "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheResponse" :object)
-  (convert-create-index "org.elasticsearch.action.admin.indices.create.CreateIndexResponse" :object)
-  (convert-delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexResponse" :object)
-  (convert-delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingResponse" :object)
-  ;; for es < 0.20
-  (convert-exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsResponse" :object)
-  ;; for es > 0.20
-  (convert-exists-index "org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse" :object)
-  (convert-flush-request "org.elasticsearch.action.admin.indices.flush.FlushResponse" :object)
-  (convert-gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotResponse" :object)
-  (convert-put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingResponse" :object)
-  (convert-put-template "org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateResponse" :object)
-  (convert-refresh-index "org.elasticsearch.action.admin.indices.refresh.RefreshResponse" :object)
-  (convert-update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsResponse" :object)
-  (convert-cluster-health "org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse" :object)
-  (convert-cluster-state "org.elasticsearch.action.admin.cluster.state.ClusterStateResponse" :object)
-  (convert-node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse" :object)
-  (convert-node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartResponse" :object)
-  (convert-node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownResponse" :object)
-  (convert-node-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsResponse" :object)
-  (convert-update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsResponse" :object))
-
-(extend-type org.elasticsearch.action.get.GetResponse
-   FromJava
-   (convert [response format] (convert-get response format)))
 
 (def-requests "org.elasticsearch.client.internal.InternalClient"
   (index-doc "org.elasticsearch.action.index.IndexRequest" [])
