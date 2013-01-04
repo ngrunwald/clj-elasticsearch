@@ -16,7 +16,7 @@
            [org.elasticsearch.common.xcontent ToXContent]
            [org.elasticsearch Version]
            [org.elasticsearch.action.search SearchType]
-           [java.lang.reflect Method Field]))
+           [java.lang.reflect Method Field Constructor]))
 
 (def ^{:dynamic true} *client*)
 
@@ -336,43 +336,42 @@
 
 (defn- get-settable-methods
   ^Method
-  [class-name]
-  (let [klass (Class/forName class-name)
-        methods (.getMethods klass)
+  [^Class klass]
+  (let [methods (.getMethods klass)
         settable (filter #(is-settable-method? klass %) (seq methods))]
     settable))
 
-(defn- get-execute-method
-  ^Method
-  [request-class-name client-class-name]
-  (let [c-klass (Class/forName client-class-name)
-        r-klass (Class/forName request-class-name)
-        methods (.getMethods c-klass)
-        executable (first (filter #(is-execute-method? r-klass %) (seq methods)))]
-    executable))
+(defn- make-executor
+  [^Class request-class ^Class client-class]
+  (let [methods (.getMethods client-class)
+        ^Method exec (first (filter #(is-execute-method? request-class %) (seq methods)))]
+    (fn
+      ([client request]
+         (println "CLASS" client-class (type client))
+         (.invoke exec client (into-array Object (list request))))
+      ([client request listener]
+         (.invoke exec client (into-array Object (list request listener)))))))
 
-(defn- request-signature
-  [class-name]
-  (let [methods (get-settable-methods class-name)
-        args (map method->arg methods)]
-    (zipmap (map keyword args)
-            methods)))
+(defn make-mappers
+  [types]
+  (for [^Class t types]
+    (if (.isArray t)
+      (let [k (.getComponentType t)]
+        (fn [args] (into-array k args)))
+      identity)))
 
-(defn- acoerce
-  [val]
-  (if (or (vector? val) (list? val))
-    (into-array val)
-    val))
-
-(defn select-vals
-  [h ks]
-  (for [k ks]
-    (get h k)))
+(defn apply-mappers
+  [fns vs]
+  (map (fn [f v] (f v)) fns vs))
 
 (defn- extract-source-val
-  [coll k]
-  (if-let [val (get coll k)]
-    (if (map? val) (json/encode-smile val) val)))
+  [coll k default]
+  (let [val (get coll k default)]
+    (if (= val default)
+      val
+      (if (map? val)
+        (json/encode-smile val)
+        val))))
 
 (def search-type-map
   {:count SearchType/COUNT
@@ -383,67 +382,154 @@
    :scan SearchType/SCAN})
 
 (defn extract-search-type
-  [coll k]
+  [coll k default]
   (if (keyword? k)
-    (get search-type-map (get coll k))
-    (get coll k)))
+    (get search-type-map (get coll k) default)
+    (get coll k default)))
 
-(defmacro defn-request
-  ^{:private true}
-  [fn-name request-class-name cst-args client-class-name]
+(defn- request-signature
+  [^Class klass]
+  (let [methods (get-settable-methods klass)
+        fns (for [^Method method methods]
+              (let [m-name (-> method (method->arg) (keyword))
+                    types (.getParameterTypes method)
+                    mapper (first (make-mappers types))
+                    extract-arg (cond
+                                 (#{:extra-source :source} m-name)
+                                 extract-source-val
+                                 (= :search-type m-name)
+                                 extract-search-type
+                                 :else get)]
+                [m-name
+                 (fn [obj args]
+                   (let [arg (extract-arg args m-name ::not-found)]
+                     (println "M" m-name arg args)
+                     (when-not (= arg ::not-found)
+                       (.invoke method obj (into-array Object
+                                                       (list (mapper arg)))))))]))]
+    (into {} fns)))
+
+(defn select-vals
+  [h ks]
+  (for [k ks]
+    (get h k)))
+
+(defn make-constructor
+  [^Class klass names]
+  (let [nb-args (count names)
+        constructors (.getConstructors klass)
+        [^Constructor const types]
+        (loop [todo constructors]
+          (if-let [c (first todo)]
+            (let [ptypes (.getParameterTypes c)]
+              (if (= nb-args (count ptypes))
+                [c ptypes]
+                (recur (rest todo))))
+            (throw
+             (ex-info
+              (format "invalid constructor signature for %s => %s" klass names)
+              {:names names :class klass}))))
+        mappers (make-mappers types)]
+    (fn [args]
+      (.newInstance const
+                    (into-array Object
+                                (apply-mappers mappers (map #(get % args) names)))))))
+
+(def client-types
+  {:client org.elasticsearch.client.internal.InternalClient
+   :indices org.elasticsearch.client.IndicesAdminClient
+   :index org.elasticsearch.client.IndicesAdminClient
+   :cluster org.elasticsearch.client.ClusterAdminClient})
+
+(defn make-requester
+  [request-class-name cst-args client-type]
   (if-let [r-klass (class-for-name request-class-name)]
-    (let [r-symb (symbol request-class-name)
-          c-symb (symbol client-class-name)
-          sig (request-signature request-class-name)
-          method (get-execute-method request-class-name client-class-name)
-          m-name (symbol (str "." (.getName method)))
-          args (remove (into #{} cst-args) (keys sig))
-          arglists [['options]
-                    ['client `{:keys [~@(map #(-> % name symbol)
-                                             (conj args "listener" "format"))] :as ~'options}]]
-          cst-gensym (take (count cst-args) (repeatedly gensym))
-          signature (reduce (fn [acc [k ^Method v]] (assoc acc k (symbol (str "." (.getName v))))) {} sig)
-          request (with-meta (gensym "request") {:tag r-symb})
-          options (gensym "options")
-          client (with-meta (gensym "client") {:tag c-symb})]
-      `(defn
-         ~fn-name
-         {:doc (format "Required args: %s. Generated from class %s" ~(pr-str cst-args) ~request-class-name)
-          :arglists '(~@arglists)}
-         ([~client options#]
-            (let [client# ~@(case client-class-name
-                              "org.elasticsearch.client.internal.InternalClient" `(~client)
-                              "org.elasticsearch.client.IndicesAdminClient"
-                              `((get-index-admin-client ~client))
-                              "org.elasticsearch.client.ClusterAdminClient"
-                              `((get-cluster-admin-client ~client)))
-                  [~@cst-gensym] (map acoerce (select-vals options# [~@cst-args]))
-                  ~request (new ~r-klass ~@cst-gensym)
-                  ~options (dissoc options# ~@cst-args)]
-              ~@(for [[k met] signature
-                      :let [extract-val
-                            (cond (#{:extra-source :source} k)
-                                  extract-source-val
-                                  (= :search-type k)
-                                  extract-search-type
-                                  :else get)]]
-                  `(when (contains? ~options ~k)
-                     (~met ~request (acoerce (~extract-val ~options ~k)))))
-              (cond
-               (get ~options :debug) ~request
-               (get ~options :listener) (~m-name client# ~request (:listener ~options))
-               :else (convert (.actionGet (~m-name client# ~request)) (:format ~options)))))
-         ([options#]
-            (~fn-name *client* options#))))))
+    (if-let [c-klass (get client-types client-type)]
+      (let [sig (request-signature r-klass)
+            req-args (keys sig)
+            setters (vals sig)
+            get-client-fn (case client-type
+                            :client  identity
+                            :indices get-index-admin-client
+                            :index   get-index-admin-client
+                            :cluster get-cluster-admin-client
+                            identity)
+            exec (make-executor r-klass c-klass)
+            args (remove (into #{} cst-args) req-args)
+            arglists [['options]
+                      ['client `{:keys [~@(map #(-> % name symbol)
+                                               (conj args "listener" "format"))] :as ~'options}]]
+            cst (make-constructor r-klass cst-args)]
+        (fn make-request
+          ([client {:keys [debug listener] :as options}]
+             (let [c (get-client-fn client)
+                   request (cst options)]
+               (println "ALL" request-class-name req-args)
+               (doseq [m setters]
+                 (m request options))
+               (cond
+                debug request
+                listener (exec c request listener)
+                :else (convert (.actionGet (exec c request)) (:format options)))))
+          ([options] (make-request *client* options)))))))
+
+;; (defmacro defn-request
+;;   ^{:private true}
+;;   [fn-name request-class-name cst-args client-class-name]
+;;   (if-let [r-klass (class-for-name request-class-name)]
+;;     (let [r-symb (symbol request-class-name)
+;;           c-symb (symbol client-class-name)
+;;           sig (request-signature request-class-name)
+;;           method (get-execute-method request-class-name client-class-name)
+;;           m-name (symbol (str "." (.getName method)))
+;;           args (remove (into #{} cst-args) (keys sig))
+;;           arglists [['options]
+;;                     ['client `{:keys [~@(map #(-> % name symbol)
+;;                                              (conj args "listener" "format"))] :as ~'options}]]
+;;           cst-gensym (take (count cst-args) (repeatedly gensym))
+;;           signature (reduce (fn [acc [k ^Method v]] (assoc acc k (symbol (str "." (.getName v))))) {} sig)
+;;           request (with-meta (gensym "request") {:tag r-symb})
+;;           options (gensym "options")
+;;           client (with-meta (gensym "client") {:tag c-symb})]
+;;       `(defn
+;;          ~fn-name
+;;          {:doc (format "Required args: %s. Generated from class %s" ~(pr-str cst-args) ~request-class-name)
+;;           :arglists '(~@arglists)}
+;;          ([~client options#]
+;;             (let [client# ~@(case client-class-name
+;;                               "org.elasticsearch.client.internal.InternalClient" `(~client)
+;;                               "org.elasticsearch.client.IndicesAdminClient"
+;;                               `((get-index-admin-client ~client))
+;;                               "org.elasticsearch.client.ClusterAdminClient"
+;;                               `((get-cluster-admin-client ~client)))
+;;                   [~@cst-gensym] (map acoerce (select-vals options# [~@cst-args]))
+;;                   ~request (new ~r-klass ~@cst-gensym)
+;;                   ~options (dissoc options# ~@cst-args)]
+;;               ~@(for [[k met] signature
+;;                       :let [extract-val
+;;                             (cond (#{:extra-source :source} k)
+;;                                   extract-source-val
+;;                                   (= :search-type k)
+;;                                   extract-search-type
+;;                                   :else get)]]
+;;                   `(when (contains? ~options ~k)
+;;                      (~met ~request (acoerce (~extract-val ~options ~k)))))
+;;               (cond
+;;                (get ~options :debug) ~request
+;;                (get ~options :listener) (~m-name client# ~request (:listener ~options))
+;;                :else (convert (.actionGet (~m-name client# ~request)) (:format ~options)))))
+;;          ([options#]
+;;             (~fn-name *client* options#))))))
 
 (defmacro def-requests
   ^{:private true}
-  [client-class-name & request-defs]
+  [client-type & request-defs]
   `(do ~@(map (fn [req-def]
-                `(defn-request ~@(concat req-def [client-class-name])))
+                `(def ~(first req-def) (make-requester
+                                        ~@(concat (rest req-def) [client-type]))))
               request-defs)))
 
-(def-requests "org.elasticsearch.client.internal.InternalClient"
+(def-requests :client
   (index-doc "org.elasticsearch.action.index.IndexRequest" [])
   (search "org.elasticsearch.action.search.SearchRequest" [])
   (get-doc "org.elasticsearch.action.get.GetRequest" [:index])
@@ -454,7 +540,7 @@
   (percolate "org.elasticsearch.action.percolate.PercolateRequest" [])
   (scroll "org.elasticsearch.action.search.SearchScrollRequest" [:scroll-id]))
 
-(def-requests "org.elasticsearch.client.IndicesAdminClient"
+(def-requests :indices
   (optimize-index "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest" [])
   (analyze-request "org.elasticsearch.action.admin.indices.analyze.AnalyzeRequest" [:index :text])
   (clear-index-cache "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheRequest" [:indices])
@@ -477,7 +563,7 @@
   (index-status "org.elasticsearch.action.admin.indices.status.IndicesStatusRequest" [])
   (update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsRequest" [:indices]))
 
-(def-requests "org.elasticsearch.client.ClusterAdminClient"
+(def-requests :cluster
   (cluster-health "org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest" [:indices])
   (cluster-state "org.elasticsearch.action.admin.cluster.state.ClusterStateRequest" [])
   (node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequest" [])
