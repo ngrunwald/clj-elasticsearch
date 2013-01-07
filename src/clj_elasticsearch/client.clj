@@ -6,6 +6,7 @@
            [org.elasticsearch.common.xcontent XContentFactory ToXContent$Params]
            [org.elasticsearch.common.settings ImmutableSettings ImmutableSettings$Builder]
            [org.elasticsearch.action.admin.indices.status IndicesStatusRequest]
+           [org.elasticsearch.action ActionFuture]
            [org.elasticsearch.common.io FastByteArrayOutputStream]
            [org.elasticsearch.client.transport TransportClient]
            [org.elasticsearch.client.support AbstractClient]
@@ -19,6 +20,17 @@
            [java.lang.reflect Method Field Constructor]))
 
 (def ^{:dynamic true} *client*)
+
+(defprotocol FromSource
+  (convert-source [this] "convert source to bytes"))
+
+(extend-protocol FromSource
+  String
+  (convert-source [this] (json/encode-smile (json/decode this)))
+  java.util.Map
+  (convert-source [this] (json/encode-smile this))
+  Object
+  (convert-source [this] this))
 
 (defn update-settings-builder
   "creates or updates a settingsBuilder with the given hash-map"
@@ -134,18 +146,20 @@
 
 (def compatible-decode-smile (make-compatible-decode-smile))
 
-(defn- convert-source
+(defn- convert-source-result
   [src]
   (cond
-   (instance? java.util.HashMap src) (into {} (map (fn [^java.util.Map$Entry e] [(.getKey e)
-                                                           (convert-source (.getValue e))]) src))
-   (instance? java.util.ArrayList src) (into [] (map convert-source src))
+   (instance? java.util.HashMap src) (into {}
+                                           (map (fn [^java.util.Map$Entry e]
+                                                  [(.getKey e)
+                                                   (convert-source-result (.getValue e))]) src))
+   (instance? java.util.ArrayList src) (into [] (map convert-source-result src))
    :else src))
 
 (defn- convert-fields
   [^java.util.HashMap hm]
   (into {} (map (fn [^org.elasticsearch.index.get.GetField f]
-                  [(.getName f) (convert-source (.getValue f))]) (.values hm))))
+                  [(.getName f) (convert-source-result (.getValue f))]) (.values hm))))
 
 (defn- convert-get
   [_ ^org.elasticsearch.action.get.GetResponse response _]
@@ -155,7 +169,7 @@
                 :_id (.getId response)
                 :_version (.getVersion response)})
         data (if-not (.isSourceEmpty response)
-               (assoc data :_source (convert-source (.sourceAsMap response)))
+               (assoc data :_source (convert-source-result (.sourceAsMap response)))
                data)
         data (let [fields (.getFields response)]
                (if-not (empty? fields)
@@ -327,30 +341,46 @@
         nb-params (alength parameters)]
     (and (allowed return) (= nb-params 1))))
 
-(defn- is-execute-method?
-  [^Class klass ^Method method]
-  (let [return (.getReturnType method)
-        parameters (into #{} (seq (.getParameterTypes method)))
-        nb-params (count parameters)]
-    (and (contains? parameters klass) (= nb-params 1))))
+(defn- get-executable-methods
+  [^Class klass methods]
+  (reduce
+   (fn [acc ^Method m]
+     (let [return (.getReturnType m)
+           parameters (into #{} (seq (.getParameterTypes m)))
+           nb-params (count parameters)]
+       (if (contains? parameters klass)
+         (cond
+          (= nb-params 1) (assoc acc :sync m)
+          (= nb-params 2) (assoc acc :async m)
+          :else acc)
+         acc)))
+   {} methods))
 
 (defn- get-settable-methods
-  ^Method
   [^Class klass]
   (let [methods (.getMethods klass)
-        settable (filter #(is-settable-method? klass %) (seq methods))]
-    settable))
+        settable (filter #(is-settable-method? klass %) (seq methods))
+        by-name (group-by (fn [^Method m] (.getName m)) settable)]
+    (for [[n ms] by-name]
+      (if (= 1 (count ms))
+        (first ms)
+        (or
+         (first
+          (filter
+           (fn [^Method m]
+             (= (first (.getParameterTypes m)) (type (byte-array 0))))
+           ms))
+         (first ms))))))
 
 (defn- make-executor
   [^Class request-class ^Class client-class]
   (let [methods (.getMethods client-class)
-        ^Method exec (first (filter #(is-execute-method? request-class %) (seq methods)))]
+        {:keys [^Method sync ^Method async]} (get-executable-methods request-class methods)]
     (fn
       ([client request]
-         (println "CLASS" client-class (type client))
-         (.invoke exec client (into-array Object (list request))))
+         (.invoke sync client (into-array Object (list request))))
       ([client request listener]
-         (.invoke exec client (into-array Object (list request listener)))))))
+         (.invoke async client (into-array Object (list request listener)))))))
 
 (defn make-mappers
   [types]
@@ -369,9 +399,7 @@
   (let [val (get coll k default)]
     (if (= val default)
       val
-      (if (map? val)
-        (json/encode-smile val)
-        val))))
+      (convert-source val))))
 
 (def search-type-map
   {:count SearchType/COUNT
@@ -403,7 +431,6 @@
                 [m-name
                  (fn [obj args]
                    (let [arg (extract-arg args m-name ::not-found)]
-                     (println "M" m-name arg args)
                      (when-not (= arg ::not-found)
                        (.invoke method obj (into-array Object
                                                        (list (mapper arg)))))))]))]
@@ -420,7 +447,7 @@
         constructors (.getConstructors klass)
         [^Constructor const types]
         (loop [todo constructors]
-          (if-let [c (first todo)]
+          (if-let [^Class c (first todo)]
             (let [ptypes (.getParameterTypes c)]
               (if (= nb-args (count ptypes))
                 [c ptypes]
@@ -433,7 +460,7 @@
     (fn [args]
       (.newInstance const
                     (into-array Object
-                                (apply-mappers mappers (map #(get % args) names)))))))
+                                (apply-mappers mappers (map #(get args %) names)))))))
 
 (def client-types
   {:client org.elasticsearch.client.internal.InternalClient
@@ -464,62 +491,14 @@
           ([client {:keys [debug listener] :as options}]
              (let [c (get-client-fn client)
                    request (cst options)]
-               (println "ALL" request-class-name req-args)
                (doseq [m setters]
                  (m request options))
                (cond
                 debug request
                 listener (exec c request listener)
-                :else (convert (.actionGet (exec c request)) (:format options)))))
+                :else (let [^ActionFuture ft (exec c request)]
+                        (convert (.actionGet ft) (:format options))))))
           ([options] (make-request *client* options)))))))
-
-;; (defmacro defn-request
-;;   ^{:private true}
-;;   [fn-name request-class-name cst-args client-class-name]
-;;   (if-let [r-klass (class-for-name request-class-name)]
-;;     (let [r-symb (symbol request-class-name)
-;;           c-symb (symbol client-class-name)
-;;           sig (request-signature request-class-name)
-;;           method (get-execute-method request-class-name client-class-name)
-;;           m-name (symbol (str "." (.getName method)))
-;;           args (remove (into #{} cst-args) (keys sig))
-;;           arglists [['options]
-;;                     ['client `{:keys [~@(map #(-> % name symbol)
-;;                                              (conj args "listener" "format"))] :as ~'options}]]
-;;           cst-gensym (take (count cst-args) (repeatedly gensym))
-;;           signature (reduce (fn [acc [k ^Method v]] (assoc acc k (symbol (str "." (.getName v))))) {} sig)
-;;           request (with-meta (gensym "request") {:tag r-symb})
-;;           options (gensym "options")
-;;           client (with-meta (gensym "client") {:tag c-symb})]
-;;       `(defn
-;;          ~fn-name
-;;          {:doc (format "Required args: %s. Generated from class %s" ~(pr-str cst-args) ~request-class-name)
-;;           :arglists '(~@arglists)}
-;;          ([~client options#]
-;;             (let [client# ~@(case client-class-name
-;;                               "org.elasticsearch.client.internal.InternalClient" `(~client)
-;;                               "org.elasticsearch.client.IndicesAdminClient"
-;;                               `((get-index-admin-client ~client))
-;;                               "org.elasticsearch.client.ClusterAdminClient"
-;;                               `((get-cluster-admin-client ~client)))
-;;                   [~@cst-gensym] (map acoerce (select-vals options# [~@cst-args]))
-;;                   ~request (new ~r-klass ~@cst-gensym)
-;;                   ~options (dissoc options# ~@cst-args)]
-;;               ~@(for [[k met] signature
-;;                       :let [extract-val
-;;                             (cond (#{:extra-source :source} k)
-;;                                   extract-source-val
-;;                                   (= :search-type k)
-;;                                   extract-search-type
-;;                                   :else get)]]
-;;                   `(when (contains? ~options ~k)
-;;                      (~met ~request (acoerce (~extract-val ~options ~k)))))
-;;               (cond
-;;                (get ~options :debug) ~request
-;;                (get ~options :listener) (~m-name client# ~request (:listener ~options))
-;;                :else (convert (.actionGet (~m-name client# ~request)) (:format ~options)))))
-;;          ([options#]
-;;             (~fn-name *client* options#))))))
 
 (defmacro def-requests
   ^{:private true}
