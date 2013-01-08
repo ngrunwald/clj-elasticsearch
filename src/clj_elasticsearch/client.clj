@@ -1,7 +1,8 @@
 (ns clj-elasticsearch.client
   (:require [cheshire.core :as json]
             [clojure.string :as str]
-            [gavagai.core :as gav])
+            [gavagai.core :as gav]
+            [clojure.stacktrace :as cst])
   (:import [org.elasticsearch.node NodeBuilder]
            [org.elasticsearch.common.xcontent XContentFactory ToXContent$Params]
            [org.elasticsearch.common.settings ImmutableSettings ImmutableSettings$Builder]
@@ -468,6 +469,12 @@
    :index org.elasticsearch.client.IndicesAdminClient
    :cluster org.elasticsearch.client.ClusterAdminClient})
 
+(defn- get-response-class-fields
+  [class-name]
+  (let [response-name (str/replace class-name #"Request" "Response")]
+    (if-let [response-class (gav/class-for-name response-name false)]
+      (gav/get-class-fields translator response-class))))
+
 (defn make-requester
   [request-class-name cst-args client-type]
   (if-let [r-klass (class-for-name request-class-name)]
@@ -484,21 +491,31 @@
             exec (make-executor r-klass c-klass)
             args (remove (into #{} cst-args) req-args)
             arglists [['options]
-                      ['client `{:keys [~@(map #(-> % name symbol)
-                                               (conj args "listener" "format"))] :as ~'options}]]
+                      ['client {:keys (into [] (map #(-> % name symbol)
+                                                    (conj args "listener" "format")))
+                                :as 'options}]]
+            response-fields (get-response-class-fields request-class-name)
+            fn-doc (format
+                    "Required constructor args: %s. Generated from class %s"
+                    (pr-str cst-args) request-class-name)
+            fn-doc (if-not (empty? response-fields)
+                     (str fn-doc ". Response fields expected " (pr-str response-fields))
+                     fn-doc)
             cst (make-constructor r-klass cst-args)]
-        (fn make-request
-          ([client {:keys [debug listener] :as options}]
-             (let [c (get-client-fn client)
-                   request (cst options)]
-               (doseq [m setters]
-                 (m request options))
-               (cond
-                debug request
-                listener (exec c request listener)
-                :else (let [^ActionFuture ft (exec c request)]
-                        (convert (.actionGet ft) (:format options))))))
-          ([options] (make-request *client* options)))))))
+        (vary-meta
+         (fn make-request
+           ([client {:keys [debug listener] :as options}]
+              (let [c (get-client-fn client)
+                    request (cst options)]
+                (doseq [m setters]
+                  (m request options))
+                (cond
+                 debug request
+                 listener (exec c request listener)
+                 :else (let [^ActionFuture ft (exec c request)]
+                         (convert (.actionGet ft) (:format options))))))
+           ([options] (make-request *client* options)))
+         assoc :arglists arglists :doc fn-doc)))))
 
 (defmacro def-requests
   ^{:private true}
@@ -506,7 +523,10 @@
   `(do ~@(map (fn [req-def]
                 `(if-let [req-fn# (make-requester
                                    ~@(concat (rest req-def) [client-type]))]
-                   (def ~(first req-def) req-fn#)))
+                   (let [symb-name# (vary-meta '~(first req-def) merge (meta req-fn#))]
+                     (intern 'clj-elasticsearch.client
+                             symb-name#
+                             req-fn#))))
               request-defs)))
 
 (def-requests :client
@@ -557,8 +577,9 @@
   [{:keys [on-failure on-response format]
     :or {format :clj
          on-failure (fn [e]
-                      ;; TODO plug in es log
-                      (println "error in listener:" e))}}]
+                      (binding [*out* *err*]
+                        (println "Error in listener")
+                        (cst/print-cause-trace e)))}}]
   (proxy [ActionListener] []
     (onFailure [e] (on-failure e))
     (onResponse [r] (on-response (convert r format)))))
