@@ -504,8 +504,9 @@
   ^{:private true}
   [client-type & request-defs]
   `(do ~@(map (fn [req-def]
-                `(def ~(first req-def) (make-requester
-                                        ~@(concat (rest req-def) [client-type]))))
+                `(if-let [req-fn# (make-requester
+                                   ~@(concat (rest req-def) [client-type]))]
+                   (def ~(first req-def) req-fn#)))
               request-defs)))
 
 (def-requests :client
