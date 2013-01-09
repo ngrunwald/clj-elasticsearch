@@ -251,6 +251,7 @@
               ["org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownResponse"]
               ["org.elasticsearch.action.admin.cluster.node.stats.NodesStatsResponse"]
               ["org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsResponse"]
+              ["org.elasticsearch.action.update.UpdateResponse" :throw? false]
               ;; for es < 0.20
               ["org.elasticsearch.action.admin.indices.exists.IndicesExistsResponse"
                :throw? false]
@@ -492,7 +493,7 @@
             args (remove (into #{} cst-args) req-args)
             arglists [['options]
                       ['client {:keys (into [] (map #(-> % name symbol)
-                                                    (conj args "listener" "format")))
+                                                    (conj req-args "listener" "format")))
                                 :as 'options}]]
             response-fields (get-response-class-fields request-class-name)
             fn-doc (format
@@ -570,7 +571,9 @@
   (node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartRequest" [:nodes-ids])
   (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids])
   (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids])
-  (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" []))
+  (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" [])
+  ;; for es > 0.20
+  (update-doc "org.elasticsearch.action.update.UpdateRequest" [:index :type :id]))
 
 (defn make-listener
   "makes a listener suitable as a callback for requests"

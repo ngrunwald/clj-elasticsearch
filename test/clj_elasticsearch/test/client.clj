@@ -72,7 +72,7 @@
                        [:hits :hits]))
               [:_source :field1])
       ["toto" "tutu"])
-  (is (re-find #":matches :version :headers :type :index :id"
+  (is (re-find #":matches :version .* ?:type :index :id"
                (:doc (meta #'clj-elasticsearch.client/index-doc))))
   (let [payload {:index "test" :type "vvv"
                  :source {:foo "bar"}
