@@ -539,7 +539,9 @@
   (delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest" [])
   (more-like-this "org.elasticsearch.action.mlt.MoreLikeThisRequest" [:index])
   (percolate "org.elasticsearch.action.percolate.PercolateRequest" [])
-  (scroll "org.elasticsearch.action.search.SearchScrollRequest" [:scroll-id]))
+  (scroll "org.elasticsearch.action.search.SearchScrollRequest" [:scroll-id])
+  ;; for es > 0.20
+  (update-doc "org.elasticsearch.action.update.UpdateRequest" [:index :type :id]))
 
 (def-requests :indices
   (optimize-index "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest" [])
@@ -571,9 +573,7 @@
   (node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartRequest" [:nodes-ids])
   (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids])
   (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids])
-  (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" [])
-  ;; for es > 0.20
-  (update-doc "org.elasticsearch.action.update.UpdateRequest" [:index :type :id]))
+  (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" []))
 
 (defn make-listener
   "makes a listener suitable as a callback for requests"
