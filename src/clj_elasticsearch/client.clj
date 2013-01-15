@@ -442,20 +442,6 @@
       val
       (convert-source val))))
 
-(def search-type-map
-  {:count SearchType/COUNT
-   :dfs-query-and-fetch SearchType/DFS_QUERY_AND_FETCH
-   :dfs-query-then-fetch SearchType/DFS_QUERY_THEN_FETCH
-   :query-and-fetch SearchType/QUERY_AND_FETCH
-   :query-then-fetch SearchType/QUERY_THEN_FETCH
-   :scan SearchType/SCAN})
-
-(defn extract-search-type
-  [coll k default]
-  (if (keyword? k)
-    (get search-type-map (get coll k) default)
-    (get coll k default)))
-
 (defn- request-signature
   [^Class klass]
   (let [methods (get-settable-methods klass)
