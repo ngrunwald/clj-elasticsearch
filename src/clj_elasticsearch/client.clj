@@ -206,25 +206,47 @@
       (fn convert
         [_ response _] (convert-xcontent response empty)))))
 
+(defn kw->enum
+  [kw]
+  (-> (name)
+      (str/upper-case)
+      (str/replace #"-" "_")))
+
+(defn enum->kw
+  [enum]
+  (-> enum
+   (str)
+   (str/lower-case)
+   (str/replace #"_" "-")
+   (keyword)))
+
+(defn make-enum-tables*
+  [^Class t]
+  (let [^Method values-m (first (filter
+                                 (fn [^Method m] (= "values" (.getName m)))
+                                 (.getMethods t)))
+        values (.invoke values-m nil (object-array 0))]
+    [(into {} (map (fn [enum] [(enum->kw enum) enum]) values))
+     (into {} (map (fn [enum] [enum (enum->kw enum)]) values))]))
+
+(def make-enum-tables
+  (memoize make-enum-tables*))
+
 (def translator
   (let [translator
         (-> (gav/make-translator)
             (gav/register-converters
              {:lazy? false :exclude [:class]}
-             [["org.elasticsearch.cluster.ClusterName"
-               :add {:value (fn [^org.elasticsearch.cluster.ClusterName cluster-name]
-                              (.value cluster-name))}]
-              ["org.elasticsearch.cluster.ClusterState"]
+             [["org.elasticsearch.cluster.ClusterState"]
               ["org.elasticsearch.cluster.metadata.MetaData" :translate-seqs? true]
               ["org.elasticsearch.cluster.metadata.AliasMetaData"]
               ["org.elasticsearch.cluster.metadata.IndexMetaData"]
               ["org.elasticsearch.cluster.metadata.MappingMetaData"]
               ["org.elasticsearch.cluster.node.DiscoveryNode"]
-              ["org.elasticsearch.common.compress.CompressedString"
-               :add {:string (fn [^org.elasticsearch.common.compress.CompressedString s]
-                               (.string s))}]
               ["org.elasticsearch.cluster.node.DiscoveryNodes"]
-              ["org.elasticsearch.common.settings.ImmutableSettings"]])
+              ["org.elasticsearch.common.settings.ImmutableSettings"]
+              ["org.elasticsearch.action.admin.cluster.health.ClusterIndexHealth"]
+              ["org.elasticsearch.action.admin.cluster.health.ClusterShardHealth"]])
             (gav/register-converters
              {:lazy? false :exclude [:class] :translate-seqs? true}
              [["org.elasticsearch.action.count.CountResponse"]
@@ -259,7 +281,19 @@
               ["org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse"
                :throw? false]])
             (gav/add-converter org.elasticsearch.action.get.GetResponse
-                               convert-get {:throw? false}))]
+                               convert-get {:throw? false})
+            (gav/add-converter org.elasticsearch.cluster.ClusterName
+                               (fn [_ ^org.elasticsearch.cluster.ClusterName cluster-name _]
+                                 (.value cluster-name)))
+            (gav/add-converter org.elasticsearch.common.compress.CompressedString
+                               (fn [_ ^org.elasticsearch.common.compress.CompressedString s _]
+                                 (.string s))))
+        translator (let [[_ table]
+                         (make-enum-tables
+                          org.elasticsearch.action.admin.cluster.health.ClusterHealthStatus)]
+                     (gav/add-converter translator
+                      org.elasticsearch.action.admin.cluster.health.ClusterHealthStatus
+                      (fn [_ enum _] (get table enum enum))))]
     (reduce
      (fn [tr class-name]
        (if-let [xconverter (make-xconverter class-name)]
@@ -387,10 +421,15 @@
 (defn make-mappers
   [types]
   (for [^Class t types]
-    (if (.isArray t)
-      (let [k (.getComponentType t)]
-        (fn [args] (into-array k args)))
-      identity)))
+    (cond
+     (.isArray t)
+     (let [k (.getComponentType t)]
+       (fn [args] (into-array k args)))
+     (.isEnum t)
+     (let [[table _] (make-enum-tables t)]
+       (fn [arg]
+         (get table arg arg)))
+     :else identity)))
 
 (defn apply-mappers
   [fns vs]
@@ -427,8 +466,6 @@
                     extract-arg (cond
                                  (#{:extra-source :source} m-name)
                                  extract-source-val
-                                 (= :search-type m-name)
-                                 extract-search-type
                                  :else get)]
                 [m-name
                  (fn [obj args]

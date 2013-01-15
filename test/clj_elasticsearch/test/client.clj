@@ -45,6 +45,7 @@
                        :id "mid"})))
   (is (> (:successful-shards (refresh-index {:indices ["test"]})) 0))
   (is (true? (:exists? (exists-index {:indices ["test"]}))))
+  (is (keyword? (:status (cluster-health {:indices ["test"]}))))
   (is (= 1 (:count (count-docs {:indices ["test"]}))))
   (let [c (atom nil)
         l (listener (fn [r] (reset! c (:count r))))]
@@ -61,7 +62,8 @@
     (is (= {"tyu" {"foo" "bar"}} (get-in d [:_source "field3"])))
     (is (= ["toto" "tutu"] (get-in d [:_source "field1"]))))
   (is (get-in (first
-               (get-in (search {:indices ["test"] :types ["tyu"] :extra-source match-all})
+               (get-in (search {:indices ["test"] :types ["tyu"]
+                                :extra-source match-all :search-type :query-then-fetch})
                        [:hits :hits]))
               [:_source :field1])
       ["toto" "tutu"])
