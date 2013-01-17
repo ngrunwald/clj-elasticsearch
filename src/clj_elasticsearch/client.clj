@@ -18,7 +18,8 @@
            [org.elasticsearch.common.xcontent ToXContent]
            [org.elasticsearch Version]
            [org.elasticsearch.action.search SearchType]
-           [java.lang.reflect Method Field Constructor]))
+           [java.lang.reflect Method Field Constructor])
+  (:use [clojure.pprint :only [cl-format]]))
 
 (def ^{:dynamic true} *client*)
 
@@ -279,21 +280,23 @@
                :throw? false]
               ;; for es > 0.20
               ["org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse"
-               :throw? false]])
-            (gav/add-converter org.elasticsearch.action.get.GetResponse
-                               convert-get {:throw? false})
-            (gav/add-converter org.elasticsearch.cluster.ClusterName
-                               (fn [_ ^org.elasticsearch.cluster.ClusterName cluster-name _]
-                                 (.value cluster-name)))
-            (gav/add-converter org.elasticsearch.common.compress.CompressedString
-                               (fn [_ ^org.elasticsearch.common.compress.CompressedString s _]
-                                 (.string s))))
+               :throw? false]
+              ;; custom converters
+              ["org.elasticsearch.action.get.GetResponse" :custom-converter convert-get :throw? false]
+              ["org.elasticsearch.cluster.ClusterName"
+               :custom-converter (fn [_ ^org.elasticsearch.cluster.ClusterName cluster-name _]
+                                   (.value cluster-name))]
+              ["org.elasticsearch.common.compress.CompressedString"
+               :custom-converter (fn [_ ^org.elasticsearch.common.compress.CompressedString s _]
+                                   (.string s))]]))
+        ;; handle enums
         translator (let [[_ table]
                          (make-enum-tables
                           org.elasticsearch.action.admin.cluster.health.ClusterHealthStatus)]
                      (gav/add-converter translator
                       org.elasticsearch.action.admin.cluster.health.ClusterHealthStatus
                       (fn [_ enum _] (get table enum enum))))]
+    ;; handle xcontent
     (reduce
      (fn [tr class-name]
        (if-let [xconverter (make-xconverter class-name)]
@@ -392,6 +395,37 @@
          acc)))
    {} methods))
 
+(defn- clean-class-name
+  [^Class klass]
+  (let [n (.getName klass)
+        last-part (last (str/split n #"\."))]
+    last-part))
+
+(defn- make-enum-doc-string
+  [table]
+  (let [enums (keys table)]
+    (cl-format false "one of ~{~S~^, ~}~^ or ~S" (butlast enums) (last enums))))
+
+(defn- make-settable
+  [^Method method]
+  (let [^Class klass (first (.getParameterTypes method))]
+   (cond
+    (= String klass)
+    {:method method :mapper identity :doc "String"}
+    (.isArray klass)
+    (let [k (.getComponentType klass)
+          mapper (fn [args] (into-array k args))
+          doc (str "seq of " (clean-class-name k) "s")]
+      {:method method :mapper mapper :doc doc})
+    (.isEnum klass)
+    (let [[table _] (make-enum-tables klass)
+          mapper (fn [arg]
+                   (get table arg arg))
+          doc (make-enum-doc-string table)]
+      {:method method :mapper mapper :doc doc})
+    :else
+    {:method method :mapper identity :doc (clean-class-name klass)})))
+
 (defn- get-settable-methods
   [^Class klass]
   (let [methods (.getMethods klass)
@@ -399,14 +433,67 @@
         by-name (group-by (fn [^Method m] (.getName m)) settable)]
     (for [[n ms] by-name]
       (if (= 1 (count ms))
-        (first ms)
-        (or
-         (first
-          (filter
-           (fn [^Method m]
-             (= (first (.getParameterTypes m)) (type (byte-array 0))))
-           ms))
-         (first ms))))))
+        (let [method (first ms)]
+          (make-settable method))
+        (let [sigs (into {} (map (fn [^Method m]
+                                   [(first (.getParameterTypes m)) m]) ms))
+              types (into #{} (keys sigs))
+              bytes-array-class (type (byte-array 0))]
+          (cond
+           ;; CreateIndexRequest
+           (contains? types org.elasticsearch.common.settings.Settings$Builder)
+           (let [met (get sigs org.elasticsearch.common.settings.Settings$Builder)
+                 mapper (fn [arg]
+                          (update-settings-builder arg))
+                 doc "HashMap of Settings"]
+             {:method met :mapper mapper :doc doc})
+           ;; mapping fields
+           (and
+            (contains? types org.elasticsearch.common.xcontent.XContentBuilder)
+            (not (contains? types bytes-array-class)))
+           (let [met (get sigs String)
+                 doc "HashMap or JSON String"
+                 mapper (fn [arg]
+                          (if (string? arg)
+                            arg
+                            (json/encode arg)))]
+             {:method met :mapper mapper :doc doc})
+           ;; source fields
+           (contains? types org.elasticsearch.common.xcontent.XContentBuilder)
+           (let [met (get sigs bytes-array-class)
+                 doc "HashMap or JSON String or SMILE bytes-array"
+                 mapper (fn [arg]
+                          (convert-source arg))]
+             {:method met :mapper mapper :doc doc})
+           ;; timeout field
+           (contains? types org.elasticsearch.common.unit.TimeValue)
+           (let [met (get sigs String)
+                 mapper identity
+                 doc "String time spec (ex: \"5s\")"]
+             {:method met :mapper mapper :doc doc})
+           ;; enums
+           (some (fn [^Class t] (.isEnum t)) (keys sigs))
+           (let [t (first (filter (fn [^Class t] (.isEnum t)) (keys sigs)))
+                 [table _] (make-enum-tables t)
+                 met (get sigs t)
+                 mapper (fn [arg]
+                          (get table arg arg))
+                 doc (make-enum-doc-string table)]
+             {:method met :mapper mapper :doc doc})
+           ;; routing field
+           (and (contains? sigs String) (contains? sigs (type (make-array String 0))))
+           (let [met (get sigs (type (make-array String 0)))
+                 mapper (fn [arg]
+                          (if (string? arg)
+                            [arg]
+                            (into-array String arg)))
+                 doc "String or seq of Strings"]
+             {:method met :mapper mapper :doc doc})
+           :else
+           (throw
+            (ex-info
+             (format "Method signature problem with method %s from class %s" n klass)
+             {:class klass :method n}))))))))
 
 (defn- make-executor
   [^Class request-class ^Class client-class]
@@ -418,47 +505,19 @@
       ([client request listener]
          (.invoke async client (into-array Object (list request listener)))))))
 
-(defn make-mappers
-  [types]
-  (for [^Class t types]
-    (cond
-     (.isArray t)
-     (let [k (.getComponentType t)]
-       (fn [args] (into-array k args)))
-     (.isEnum t)
-     (let [[table _] (make-enum-tables t)]
-       (fn [arg]
-         (get table arg arg)))
-     :else identity)))
-
-(defn apply-mappers
-  [fns vs]
-  (map (fn [f v] (f v)) fns vs))
-
-(defn- extract-source-val
-  [coll k default]
-  (let [val (get coll k default)]
-    (if (= val default)
-      val
-      (convert-source val))))
-
 (defn- request-signature
   [^Class klass]
   (let [methods (get-settable-methods klass)
-        fns (for [^Method method methods]
-              (let [m-name (-> method (method->arg) (keyword))
-                    types (.getParameterTypes method)
-                    mapper (first (make-mappers types))
-                    extract-arg (cond
-                                 (#{:extra-source :source} m-name)
-                                 extract-source-val
-                                 :else get)]
+        fns (for [{:keys [^Method method mapper doc]} methods]
+              (let [m-name (-> method (method->arg) (keyword))]
                 [m-name
-                 (fn [obj args]
-                   (let [arg (extract-arg args m-name ::not-found)]
-                     (when-not (= arg ::not-found)
-                       (.invoke method obj (into-array Object
-                                                       (list (mapper arg)))))))]))]
+                 (vary-meta
+                  (fn [obj args]
+                    (let [arg (get args m-name ::not-found)]
+                      (when-not (= arg ::not-found)
+                        (.invoke method obj (into-array Object
+                                                        (list (mapper arg)))))))
+                  merge {::type-doc doc})]))]
     (into {} fns)))
 
 (defn select-vals
@@ -499,6 +558,16 @@
     (if-let [response-class (gav/class-for-name response-name false)]
       (gav/get-class-fields translator response-class))))
 
+(defn- format-params-doc
+  [sig]
+  (let [mets (map (fn [[m s]] [m (::type-doc (meta s))]) sig)
+        full-mets (concat mets
+                          [[:listener "takes a listener object and makes the call async"]
+                           [:format "one of :clj, :json or :java"]])
+        max-length (inc (apply max (map #(count (str %)) (keys sig))))]
+    (cl-format false "~2TParams keys:~%~:{~4T~vA=> ~A~%~}"
+               (map #(concat [max-length] %) full-mets))))
+
 (defn make-requester
   [request-class-name cst-args client-type]
   (if-let [r-klass (class-for-name request-class-name)]
@@ -514,16 +583,17 @@
                             identity)
             exec (make-executor r-klass c-klass)
             args (remove (into #{} cst-args) req-args)
-            arglists [['options]
+            arglists [['params]
                       ['client {:keys (into [] (map #(-> % name symbol)
                                                     (conj req-args "listener" "format")))
                                 :as 'options}]]
             response-fields (get-response-class-fields request-class-name)
+            params-doc (format-params-doc sig)
             fn-doc (format
-                    "Required constructor args: %s. Generated from class %s"
-                    (pr-str cst-args) request-class-name)
+                    "Required constructor args: %s. Generated from class %s\n%s"
+                    (pr-str cst-args) request-class-name params-doc)
             fn-doc (if-not (empty? response-fields)
-                     (str fn-doc ". Response fields expected " (pr-str response-fields))
+                     (str fn-doc "Response fields expected " (pr-str response-fields))
                      fn-doc)
             cst (make-constructor r-klass cst-args)]
         (vary-meta
