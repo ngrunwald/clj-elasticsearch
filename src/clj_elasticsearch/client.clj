@@ -12,10 +12,12 @@
            [org.elasticsearch.client.transport TransportClient]
            [org.elasticsearch.client.support AbstractClient]
            [org.elasticsearch.node Node]
+           [org.elasticsearch.common.unit TimeValue]
            [org.elasticsearch.client Client ClusterAdminClient IndicesAdminClient]
            [org.elasticsearch.common.transport InetSocketTransportAddress]
            [org.elasticsearch.action  ActionListener]
            [org.elasticsearch.common.xcontent ToXContent]
+           [org.elasticsearch.search Scroll]
            [org.elasticsearch Version]
            [org.elasticsearch.action.search SearchType]
            [java.lang.reflect Method Field Constructor])
@@ -322,7 +324,10 @@
         parameter (first (seq (.getParameterTypes method)))
         conv (str/replace name #"^set|^get|^is" "")
         conv (str/lower-case (str/replace conv #"(\p{Lower})(\p{Upper})" "$1-$2"))
-        added (if (and parameter (= parameter java.lang.Boolean/TYPE)) (str conv "?") conv)]
+        added (if (and parameter
+                       (or (= java.lang.Boolean parameter)
+                           (= parameter java.lang.Boolean/TYPE)))
+                (str conv "?") conv)]
     added))
 
 (defn class-for-name
@@ -407,8 +412,8 @@
     (cl-format false "one of ~{~S~^, ~}~^ or ~S" (butlast enums) (last enums))))
 
 (defn- make-settable
-  [^Method method]
-  (let [^Class klass (first (.getParameterTypes method))]
+  [method]
+  (for [^Class klass (.getParameterTypes method)]
    (cond
     (= String klass)
     {:method method :mapper identity :doc "String"}
@@ -423,6 +428,11 @@
                    (get table arg arg))
           doc (make-enum-doc-string table)]
       {:method method :mapper mapper :doc doc})
+    (= org.elasticsearch.search.Scroll klass)
+    (let [mapper (fn [arg]
+                   (Scroll. (TimeValue/parseTimeValue arg nil)))
+          doc "String time spec (ex: \"5s\")"]
+      {:method method :mapper mapper :doc doc})
     :else
     {:method method :mapper identity :doc (clean-class-name klass)})))
 
@@ -434,7 +444,7 @@
     (for [[n ms] by-name]
       (if (= 1 (count ms))
         (let [method (first ms)]
-          (make-settable method))
+          (first (make-settable method)))
         (let [sigs (into {} (map (fn [^Method m]
                                    [(first (.getParameterTypes m)) m]) ms))
               types (into #{} (keys sigs))
@@ -525,6 +535,10 @@
   (for [k ks]
     (get h k)))
 
+(defn apply-mappers
+  [fns vs]
+  (map (fn [f v] (f v)) fns vs))
+
 (defn make-constructor
   [^Class klass names]
   (let [nb-args (count names)
@@ -540,11 +554,12 @@
              (ex-info
               (format "invalid constructor signature for %s => %s" klass names)
               {:names names :class klass}))))
-        mappers (make-mappers types)]
+        mappers (map :mapper (make-settable const))]
     (fn [args]
       (.newInstance const
                     (into-array Object
-                                (apply-mappers mappers (map #(get args %) names)))))))
+                                (apply-mappers mappers
+                                               (map #(get args %) names)))))))
 
 (def client-types
   {:client org.elasticsearch.client.internal.InternalClient
@@ -559,21 +574,28 @@
       (gav/get-class-fields translator response-class))))
 
 (defn- format-params-doc
-  [sig]
-  (let [mets (map (fn [[m s]] [m (::type-doc (meta s))]) sig)
-        full-mets (concat mets
-                          [[:listener "takes a listener object and makes the call async"]
-                           [:format "one of :clj, :json or :java"]])
-        max-length (inc (apply max (map #(count (str %)) (keys sig))))]
+  [sig cst-args]
+  (let [required (into #{} cst-args)
+        mets (reduce (fn [acc [m s]]
+                       (let [type-doc (::type-doc (meta s))]
+                         (if (required m)
+                           (update-in acc [:required] conj [m (str "(required) " type-doc)])
+                           (update-in acc [:optional] conj [m type-doc]))))
+                     {:required [] :optional []} sig)
+        mets (update-in mets [:optional] conj
+                             [:listener "takes a listener object and makes the call async"]
+                             [:format "one of :clj, :json or :java"])
+        max-length (inc (apply max (map #(count (str %)) (keys sig))))
+        ordered-mets (concat (sort (:required mets)) (sort (:optional mets)))]
     (cl-format false "~2TParams keys:~%~:{~4T~vA=> ~A~%~}"
-               (map #(concat [max-length] %) full-mets))))
+               (map #(concat [max-length] %) ordered-mets))))
 
 (defn make-requester
-  [request-class-name cst-args client-type]
+  [client-type request-class-name cst-args req-args]
   (if-let [r-klass (class-for-name request-class-name)]
     (if-let [c-klass (get client-types client-type)]
       (let [sig (request-signature r-klass)
-            req-args (keys sig)
+            all-args (keys sig)
             setters (vals sig)
             get-client-fn (case client-type
                             :client  identity
@@ -582,16 +604,16 @@
                             :cluster get-cluster-admin-client
                             identity)
             exec (make-executor r-klass c-klass)
-            args (remove (into #{} cst-args) req-args)
-            arglists [['params]
-                      ['client {:keys (into [] (map #(-> % name symbol)
-                                                    (conj req-args "listener" "format")))
-                                :as 'options}]]
+            arglists [[{:keys (into []
+                                    (map #(-> % name symbol)
+                                         (conj all-args "listener" "format")))
+                        :as 'params}]
+                      ['client 'params]]
             response-fields (get-response-class-fields request-class-name)
-            params-doc (format-params-doc sig)
+            params-doc (format-params-doc sig (concat cst-args req-args))
             fn-doc (format
-                    "Required constructor args: %s. Generated from class %s\n%s"
-                    (pr-str cst-args) request-class-name params-doc)
+                    "Generated from Class %s\n%s"
+                    request-class-name params-doc)
             fn-doc (if-not (empty? response-fields)
                      (str fn-doc "Response fields expected " (pr-str response-fields))
                      fn-doc)
@@ -616,7 +638,7 @@
   [client-type & request-defs]
   `(do ~@(map (fn [req-def]
                 `(if-let [req-fn# (make-requester
-                                   ~@(concat (rest req-def) [client-type]))]
+                                   ~@(concat [client-type] (rest req-def)))]
                    (let [symb-name# (vary-meta '~(first req-def) merge (meta req-fn#))]
                      (intern 'clj-elasticsearch.client
                              symb-name#
@@ -624,49 +646,49 @@
               request-defs)))
 
 (def-requests :client
-  (index-doc "org.elasticsearch.action.index.IndexRequest" [])
-  (search "org.elasticsearch.action.search.SearchRequest" [])
-  (get-doc "org.elasticsearch.action.get.GetRequest" [:index])
-  (count-docs "org.elasticsearch.action.count.CountRequest" [:indices])
-  (delete-doc "org.elasticsearch.action.delete.DeleteRequest" [])
-  (delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest" [])
-  (more-like-this "org.elasticsearch.action.mlt.MoreLikeThisRequest" [:index])
-  (percolate "org.elasticsearch.action.percolate.PercolateRequest" [])
-  (scroll "org.elasticsearch.action.search.SearchScrollRequest" [:scroll-id])
+  (index-doc "org.elasticsearch.action.index.IndexRequest" [:index] [:source :type])
+  (search "org.elasticsearch.action.search.SearchRequest" [] [])
+  (get-doc "org.elasticsearch.action.get.GetRequest" [:index] [:id])
+  (count-docs "org.elasticsearch.action.count.CountRequest" [:indices] [])
+  (delete-doc "org.elasticsearch.action.delete.DeleteRequest" [:index :type :id] [])
+  (delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest" [] [:query])
+  (more-like-this "org.elasticsearch.action.mlt.MoreLikeThisRequest" [:index] [:id])
+  (percolate "org.elasticsearch.action.percolate.PercolateRequest" [:index :type] [:source])
+  (scroll "org.elasticsearch.action.search.SearchScrollRequest" [:scroll-id] [])
   ;; for es > 0.20
-  (update-doc "org.elasticsearch.action.update.UpdateRequest" [:index :type :id]))
+  (update-doc "org.elasticsearch.action.update.UpdateRequest" [:index :type :id] [:script]))
 
 (def-requests :indices
-  (optimize-index "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest" [])
-  (analyze-request "org.elasticsearch.action.admin.indices.analyze.AnalyzeRequest" [:index :text])
-  (clear-index-cache "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheRequest" [:indices])
-  (close-index "org.elasticsearch.action.admin.indices.close.CloseIndexRequest" [:index])
-  (create-index "org.elasticsearch.action.admin.indices.create.CreateIndexRequest" [:index])
-  (delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest" [:indices])
-  (delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingRequest" [:indices])
-  (delete-template "org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateRequest" [:name])
+  (optimize-index "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest" [] [])
+  (analyze-request "org.elasticsearch.action.admin.indices.analyze.AnalyzeRequest" [:index :text] [])
+  (clear-index-cache "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheRequest" [:indices] [])
+  (close-index "org.elasticsearch.action.admin.indices.close.CloseIndexRequest" [:index] [])
+  (create-index "org.elasticsearch.action.admin.indices.create.CreateIndexRequest" [:index] [])
+  (delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest" [:indices] [])
+  (delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingRequest" [:indices] [])
+  (delete-template "org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateRequest" [:name] [])
   ;; for es < 0.20
-  (exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsRequest" [:indices])
+  (exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsRequest" [:indices] [])
   ;; for es > 0.20
-  (exists-index "org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest" [:indices])
-  (flush-index "org.elasticsearch.action.admin.indices.flush.FlushRequest" [:indices])
-  (gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotRequest" [:indices])
-  (put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest" [:indices])
-  (put-template "org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateRequest" [:name])
-  (refresh-index "org.elasticsearch.action.admin.indices.refresh.RefreshRequest" [:indices])
-  (index-segments "org.elasticsearch.action.admin.indices.segments.IndicesSegmentsRequest" [])
-  (index-stats "org.elasticsearch.action.admin.indices.stats.IndicesStatsRequest" [])
-  (index-status "org.elasticsearch.action.admin.indices.status.IndicesStatusRequest" [])
-  (update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsRequest" [:indices]))
+  (exists-index "org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest" [:indices] [])
+  (flush-index "org.elasticsearch.action.admin.indices.flush.FlushRequest" [:indices] [])
+  (gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotRequest" [:indices] [])
+  (put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest" [:indices] [])
+  (put-template "org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateRequest" [:name] [])
+  (refresh-index "org.elasticsearch.action.admin.indices.refresh.RefreshRequest" [:indices] [])
+  (index-segments "org.elasticsearch.action.admin.indices.segments.IndicesSegmentsRequest" [] [])
+  (index-stats "org.elasticsearch.action.admin.indices.stats.IndicesStatsRequest" [] [])
+  (index-status "org.elasticsearch.action.admin.indices.status.IndicesStatusRequest" [] [])
+  (update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsRequest" [:indices] []))
 
 (def-requests :cluster
-  (cluster-health "org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest" [:indices])
-  (cluster-state "org.elasticsearch.action.admin.cluster.state.ClusterStateRequest" [])
-  (node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequest" [])
-  (node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartRequest" [:nodes-ids])
-  (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids])
-  (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids])
-  (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" []))
+  (cluster-health "org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest" [:indices] [])
+  (cluster-state "org.elasticsearch.action.admin.cluster.state.ClusterStateRequest" [] [])
+  (node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequest" [] [])
+  (node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartRequest" [:nodes-ids] [])
+  (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids] [])
+  (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids] [])
+  (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" [] []))
 
 (defn make-listener
   "makes a listener suitable as a callback for requests"
