@@ -318,6 +318,53 @@
   ([response]
      (convert* response {})))
 
+(defn make-listener
+  "makes a listener suitable as a callback for requests"
+  [{:keys [on-failure on-response format]
+    :or {format :clj
+         on-failure (fn [e]
+                      (binding [*out* *err*]
+                        (println "Error in listener")
+                        (cst/print-cause-trace e)))}}]
+  (proxy [ActionListener] []
+    (onFailure [e] (on-failure e))
+    (onResponse [r] (on-response (convert r format)))))
+
+(deftype ESPromise [es-promise]
+  clojure.lang.IDeref
+  (deref [_]
+    (let [res (deref es-promise)]
+      (if (instance? Exception res)
+        (throw res)
+        res)))
+  clojure.lang.IBlockingDeref
+  (deref
+    [_ timeout-ms timeout-val]
+    (let [res (deref es-promise timeout-ms timeout-val)]
+      (if (and (instance? Exception res)
+               (not= res timeout-val))
+        (throw res)
+        res)))
+  clojure.lang.IPending
+  (isRealized [_] (realized? es-promise))
+  clojure.lang.IFn
+  (invoke
+    [_ x]
+    (deliver es-promise x)))
+
+(defn make-es-promise
+  []
+  (ESPromise. (promise)))
+
+(defn make-async-listener
+  ([es-promise {:keys [format timeout] :or {format :clj}}]
+     (make-listener
+      {:format format
+       :on-response (fn [r] (deliver es-promise r))
+       :on-failure (fn [e] (deliver es-promise e))}))
+  ([es-promise]
+     (make-async-listener es-promise {})))
+
 (defn- method->arg
   [^Method method]
   (let [name (.getName method)
@@ -450,6 +497,9 @@
               types (into #{} (keys sigs))
               bytes-array-class (type (byte-array 0))]
           (cond
+           ;; only one left
+           (= 1 (count types))
+           (first (make-settable (first (vals sigs))))
            ;; CreateIndexRequest
            (contains? types org.elasticsearch.common.settings.Settings$Builder)
            (let [met (get sigs org.elasticsearch.common.settings.Settings$Builder)
@@ -503,7 +553,7 @@
            (throw
             (ex-info
              (format "Method signature problem with method %s from class %s" n klass)
-             {:class klass :method n}))))))))
+             {:class klass :method n :types types :count (count ms) :all-methods ms}))))))))
 
 (defn- make-executor
   [^Class request-class ^Class client-class]
@@ -584,7 +634,8 @@
                      {:required [] :optional []} sig)
         mets (update-in mets [:optional] conj
                              [:listener "takes a listener object and makes the call async"]
-                             [:format "one of :clj, :json or :java"])
+                             [:format "one of :clj, :json or :java"]
+                             [:mode "one of :sync (default) or :async (returns a promise)"])
         max-length (inc (apply max (map #(count (str %)) (keys sig))))
         ordered-mets (concat (sort (:required mets)) (sort (:optional mets)))]
     (cl-format false "~2TParams keys:~%~:{~4T~vA=> ~A~%~}"
@@ -605,8 +656,9 @@
                             identity)
             exec (make-executor r-klass c-klass)
             arglists [[{:keys (into []
-                                    (map #(-> % name symbol)
-                                         (conj all-args "listener" "format")))
+                                    (sort
+                                     (map #(-> % name symbol)
+                                          (conj all-args "listener" "format" "mode"))))
                         :as 'params}]
                       ['client 'params]]
             response-fields (get-response-class-fields request-class-name)
@@ -620,7 +672,7 @@
             cst (make-constructor r-klass cst-args)]
         (vary-meta
          (fn make-request
-           ([client {:keys [debug listener] :as options}]
+           ([client {:keys [debug listener mode] :as options}]
               (let [c (get-client-fn client)
                     request (cst options)]
                 (doseq [m setters]
@@ -628,6 +680,9 @@
                 (cond
                  debug request
                  listener (exec c request listener)
+                 (= mode :async) (let [es-promise (make-es-promise)]
+                                   (exec c request (make-async-listener es-promise options))
+                                   es-promise)
                  :else (let [^ActionFuture ft (exec c request)]
                          (convert (.actionGet ft) (:format options))))))
            ([options] (make-request *client* options)))
@@ -689,23 +744,6 @@
   (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids] [])
   (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids] [])
   (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" [] []))
-
-(defn make-listener
-  "makes a listener suitable as a callback for requests"
-  [{:keys [on-failure on-response format]
-    :or {format :clj
-         on-failure (fn [e]
-                      (binding [*out* *err*]
-                        (println "Error in listener")
-                        (cst/print-cause-trace e)))}}]
-  (proxy [ActionListener] []
-    (onFailure [e] (on-failure e))
-    (onResponse [r] (on-response (convert r format)))))
-
-(defn listener
-  "easy to use listener with reasonable defaults"
-  [on-response]
-  (make-listener {:on-response on-response :format :clj}))
 
 (defn atomic-update-from-source
   "atomically updates a document with an optimistic concurrency control policy.
