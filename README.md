@@ -29,13 +29,17 @@ You can also use the functions asynchronously by providing a callback listener w
                               {:on-failure (fn [e] (error e "error in es listener"))
                                :on-success (fn [res] (println (convert res :clj)))})})
 ```
-or in a simpler way with sane defaults:
+or in a simpler way by using async mode and dereferencing the returned promise:
 
 ```clojure
-(count-docs es {:indices ["test"]
-                :listener (listener (fn [res] (println (:count res))))})
+(let [p (count-docs es {:indices ["test"] :mode :async})
+      ;; do work here, then when you need it:
+      c (:count @p)]
+  (println "COUNT" c)
 ```
-A bit more details can be found in the tests.
+In this case, if the request was a failure, the corresponding Exception will be thrown when you deref the returned promise. You can try/catch it as usual.
+
+A bit more details on usage can be found in the tests.
 
 ## Compatibility
 

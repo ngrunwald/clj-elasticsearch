@@ -427,7 +427,7 @@
   (close [this] "closes this Elasticsearch client and any underlying infrastructure"))
 
 (defprotocol PClient
-  (getClient [this] "returns a Elasticsearch Client instance"))
+  (getClient ^Client [this] "returns a Elasticsearch Client instance"))
 
 (extend-protocol PClient
   TransportClient
