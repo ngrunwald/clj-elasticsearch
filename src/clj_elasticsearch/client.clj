@@ -73,7 +73,7 @@
      {} leaves)))
 
 (defn make-node
-  "makes a new native node client"
+  "makes a new native elasticsearch node"
   ^org.elasticsearch.node.Node
   [{:keys [local-mode client-mode load-config cluster-name settings hosts]
     :or {client-mode true
@@ -423,19 +423,38 @@
     (catch ClassNotFoundException _
       nil)))
 
+(defprotocol Closable
+  (close [this] "closes this Elasticsearch client and any underlying infrastructure"))
+
+(defprotocol PClient
+  (getClient [this] "returns a Elasticsearch Client instance"))
+
+(extend-protocol PClient
+  TransportClient
+  (getClient [this] this))
+
+(defrecord ESNodeClient [^org.elasticsearch.node.Node node
+                         ^org.elasticsearch.client.Client client]
+  Closable
+  (close [this] (do (.close client)
+                    (.close node)))
+  PClient
+  (getClient [this] client))
+
 (defn make-client
   "creates a client of given type (:node or :transport) and spec"
   [type spec]
   (case type
-    :node (.client (make-node spec))
+    :node (let [node (make-node spec)]
+            (ESNodeClient. node (.client node)))
     :transport (make-transport-client spec)
     (make-transport-client spec)))
 
 (defmacro with-node-client
   "opens a node client with given spec and executes the body before closing it"
   [server-spec & body]
-  `(with-open [node# (make-node ~server-spec)]
-    (binding [clj-elasticsearch.client/*client* (.client node#)]
+  `(with-open [node# (make-client :node ~server-spec)]
+     (binding [clj-elasticsearch.client/*client* node#]
       (do
         ~@body))))
 
@@ -455,12 +474,12 @@
 (defn- get-index-admin-client
   ^IndicesAdminClient
   [^Client client]
-  (-> client (.admin) (.indices)))
+  (-> client (getClient) (.admin) (.indices)))
 
 (defn- get-cluster-admin-client
   ^ClusterAdminClient
   [^Client client]
-  (-> client (.admin) (.cluster)))
+  (-> client (getClient) (.admin) (.cluster)))
 
 (defn- is-settable-method?
   [^Class klass ^Method method]
@@ -688,7 +707,7 @@
             all-args (keys sig)
             setters (vals sig)
             get-client-fn (case client-type
-                            :client  identity
+                            :client  getClient
                             :indices get-index-admin-client
                             :index   get-index-admin-client
                             :cluster get-cluster-admin-client
