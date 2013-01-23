@@ -235,23 +235,36 @@
 (def make-enum-tables
   (memoize make-enum-tables*))
 
+(defn str-conv
+  [_ o _]
+  (str o))
+
 (def translator
   (let [translator
-        (-> (gav/make-translator)
+        (-> (gav/make-translator true)
             (gav/register-converters
              {:lazy? false :exclude [:class]}
-             [["org.elasticsearch.cluster.ClusterState"]
+             [["org.elasticsearch.cluster.ClusterState" :exclude [:allocation-explanation :blocks]]
               ["org.elasticsearch.cluster.metadata.MetaData" :translate-seqs? true]
               ["org.elasticsearch.cluster.metadata.AliasMetaData"]
               ["org.elasticsearch.cluster.metadata.IndexMetaData"]
               ["org.elasticsearch.cluster.metadata.MappingMetaData"]
               ["org.elasticsearch.cluster.node.DiscoveryNode"]
               ["org.elasticsearch.cluster.node.DiscoveryNodes"]
-              ["org.elasticsearch.common.settings.ImmutableSettings"]
               ["org.elasticsearch.action.admin.cluster.health.ClusterIndexHealth"]
-              ["org.elasticsearch.action.admin.cluster.health.ClusterShardHealth"]])
+              ["org.elasticsearch.action.admin.cluster.health.ClusterShardHealth"]
+              ["org.elasticsearch.cluster.routing.ImmutableShardRouting"
+               :force ["primary" "initializing" "shortSummary" "relocating" "relocatingNodeId"
+                       "started" "state" "unassigned" "version" "started"]]
+              ["org.elasticsearch.cluster.routing.MutableShardRouting"
+               :force ["primary" "initializing" "shortSummary" "relocating" "relocatingNodeId"
+                       "started" "state" "unassigned" "version" "started"]]
+              ["org.elasticsearch.cluster.routing.IndexShardRoutingTable"]
+              ["org.elasticsearch.index.shard.ShardId"]
+              ["org.elasticsearch.action.admin.cluster.node.info.NodeInfo"]])
             (gav/register-converters
-             {:lazy? false :exclude [:class] :translate-seqs? true}
+             {:lazy? false :exclude [:class]
+              :translate-seqs? true}
              [["org.elasticsearch.action.count.CountResponse"]
               ["org.elasticsearch.action.delete.DeleteResponse"]
               ["org.elasticsearch.action.deletebyquery.DeleteByQueryResponse"]
@@ -277,6 +290,10 @@
               ["org.elasticsearch.action.admin.cluster.node.stats.NodesStatsResponse"]
               ["org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsResponse"]
               ["org.elasticsearch.action.update.UpdateResponse" :throw? false]
+              ["org.elasticsearch.cluster.routing.RoutingTable"]
+              ["org.elasticsearch.cluster.routing.RoutingNodes"]
+              ["org.elasticsearch.cluster.routing.IndexRoutingTable"]
+              ["org.elasticsearch.action.admin.cluster.node.stats.NodeStats"]
               ;; for es < 0.20
               ["org.elasticsearch.action.admin.indices.exists.IndicesExistsResponse"
                :throw? false]
@@ -284,20 +301,36 @@
               ["org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse"
                :throw? false]
               ;; custom converters
+              ["org.elasticsearch.cluster.routing.RoutingNode"
+               :force ["nodeId" "numberOfOwningShards" "shards"]]
               ["org.elasticsearch.action.get.GetResponse" :custom-converter convert-get :throw? false]
+              ["org.elasticsearch.common.transport.LocalTransportAddress"
+               :custom-converter str-conv]
+              ["org.elasticsearch.common.transport.InetSocketTransportAddress"
+               :custom-converter str-conv]
+              ["org.elasticsearch.Version" :custom-converter str-conv]
               ["org.elasticsearch.cluster.ClusterName"
                :custom-converter (fn [_ ^org.elasticsearch.cluster.ClusterName cluster-name _]
                                    (.value cluster-name))]
               ["org.elasticsearch.common.compress.CompressedString"
                :custom-converter (fn [_ ^org.elasticsearch.common.compress.CompressedString s _]
-                                   (.string s))]]))
+                                   (.string s))]
+              ["org.elasticsearch.common.settings.ImmutableSettings"
+               :custom-converter (fn [_ ^org.elasticsearch.common.settings.ImmutableSettings o _]
+                                   (into {} (.getAsMap o)))]]))
         ;; handle enums
-        translator (let [[_ table]
-                         (make-enum-tables
-                          org.elasticsearch.action.admin.cluster.health.ClusterHealthStatus)]
-                     (gav/add-converter translator
-                      org.elasticsearch.action.admin.cluster.health.ClusterHealthStatus
-                      (fn [_ enum _] (get table enum enum))))]
+        translator (reduce
+                    (fn [t klass]
+                      (let [[_ table]
+                            (make-enum-tables klass)]
+                        (gav/add-converter
+                         t
+                         klass
+                         (fn [_ enum _] (get table enum enum)))))
+                    translator
+                    [org.elasticsearch.action.admin.cluster.health.ClusterHealthStatus
+                     org.elasticsearch.cluster.metadata.IndexMetaData$State
+                     org.elasticsearch.cluster.routing.ShardRoutingState])]
     ;; handle xcontent
     (reduce
      (fn [tr class-name]
@@ -306,7 +339,13 @@
          tr))
      translator ["org.elasticsearch.action.search.SearchResponse"
                  "org.elasticsearch.action.admin.indices.analyze.AnalyzeResponse"
-                 "org.elasticsearch.action.admin.indices.status.IndicesStatusResponse"])))
+                 "org.elasticsearch.action.admin.indices.status.IndicesStatusResponse"
+                 "org.elasticsearch.action.admin.indices.segments.IndicesSegmentResponse"
+                 "org.elasticsearch.action.admin.indices.status.IndicesStatusResponse"
+                 "org.elasticsearch.action.admin.indices.stats.CommonStats"
+                 "org.elasticsearch.action.admin.indices.stats.IndicesStats"
+                 "org.elasticsearch.indices.NodeIndicesStats"
+                 "org.elasticsearch.common.xcontent.ToXContent"])))
 
 (def convert* (partial gav/translate translator))
 
@@ -707,7 +746,7 @@
   (count-docs "org.elasticsearch.action.count.CountRequest" [:indices] [])
   (delete-doc "org.elasticsearch.action.delete.DeleteRequest" [:index :type :id] [])
   (delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest" [] [:query])
-  (more-like-this "org.elasticsearch.action.mlt.MoreLikeThisRequest" [:index] [:id])
+  (more-like-this "org.elasticsearch.action.mlt.MoreLikeThisRequest" [:index] [:id :type])
   (percolate "org.elasticsearch.action.percolate.PercolateRequest" [:index :type] [:source])
   (scroll "org.elasticsearch.action.search.SearchScrollRequest" [:scroll-id] [])
   ;; for es > 0.20
