@@ -35,9 +35,9 @@ or in a simpler way by using async mode and dereferencing the returned promise:
 (let [p (count-docs es {:indices ["test"] :mode :async})
       ;; do work here, then when you need it:
       c (:count @p)]
-  (println "COUNT" c)
+  (println "COUNT" c))
 ```
-In this case, if the request was a failure, the corresponding Exception will be thrown when you deref the returned promise. You can try/catch it as usual.
+In this case, if the request was a failure, the corresponding `Exception` will be thrown when you deref the returned promise. You can try/catch it as usual.
 
 A bit more details on usage can be found in the tests.
 
