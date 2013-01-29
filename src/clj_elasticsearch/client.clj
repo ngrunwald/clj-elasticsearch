@@ -454,17 +454,21 @@
   "opens a node client with given spec and executes the body before closing it"
   [server-spec & body]
   `(with-open [node# (make-client :node ~server-spec)]
-     (binding [clj-elasticsearch.client/*client* node#]
-      (do
-        ~@body))))
+     (with-client node#
+       (do ~@body))))
 
 (defmacro with-transport-client
   "opens a transport client with given spec and executes the body before closing it"
   [server-spec & body]
   `(with-open [client# (make-client :transport ~server-spec)]
-    (binding [clj-elasticsearch.client/*client* client#]
-      (do
-        ~@body))))
+     (with-client client#
+       (do ~@body))))
+
+(defmacro with-client
+  "uses an existing client in the body, does not close it afterward"
+  [client & body]
+  `(binding [clj-elasticsearch.client/*client* ~client]
+     (do ~@body)))
 
 (defn build-document
   "returns a string representation of a document suitable for indexing"
