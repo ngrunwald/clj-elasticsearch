@@ -248,7 +248,6 @@
               ["org.elasticsearch.cluster.metadata.MetaData" :translate-seqs? true]
               ["org.elasticsearch.cluster.metadata.AliasMetaData"]
               ["org.elasticsearch.cluster.metadata.IndexMetaData"]
-              ["org.elasticsearch.cluster.metadata.MappingMetaData"]
               ["org.elasticsearch.cluster.node.DiscoveryNode"]
               ["org.elasticsearch.cluster.node.DiscoveryNodes"]
               ["org.elasticsearch.action.admin.cluster.health.ClusterIndexHealth"]
@@ -291,7 +290,7 @@
               ["org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsResponse"]
               ["org.elasticsearch.action.update.UpdateResponse" :throw? false]
               ["org.elasticsearch.cluster.routing.RoutingTable"]
-              ["org.elasticsearch.cluster.routing.RoutingNodes"]
+              ["org.elasticsearch.cluster.routing.RoutingNodes" :exclude [:blocks]]
               ["org.elasticsearch.cluster.routing.IndexRoutingTable"]
               ["org.elasticsearch.action.admin.cluster.node.stats.NodeStats"]
               ;; for es < 0.20
@@ -317,7 +316,10 @@
                                    (.string s))]
               ["org.elasticsearch.common.settings.ImmutableSettings"
                :custom-converter (fn [_ ^org.elasticsearch.common.settings.ImmutableSettings o _]
-                                   (into {} (.getAsMap o)))]]))
+                                   (into {} (.getAsMap o)))]
+              ["org.elasticsearch.cluster.metadata.MappingMetaData"
+               :custom-converter (fn [tr ^org.elasticsearch.cluster.metadata.MappingMetaData o opts]
+                                   (gav/translate tr (.getSourceAsMap o) opts))]]))
         ;; handle enums
         translator (reduce
                     (fn [t klass]
@@ -357,6 +359,12 @@
   ([response]
      (convert* response {})))
 
+(defprotocol ComposableListener
+  (compose [this listener] "composes with the given listener, returning a new listener")
+  (getFailureHandler [this])
+  (getResponseHandler [this])
+  (getFormat [this]))
+
 (defn make-listener
   "makes a listener suitable as a callback for requests"
   [{:keys [on-failure on-response format]
@@ -365,9 +373,20 @@
                       (binding [*out* *err*]
                         (println "Error in listener")
                         (cst/print-cause-trace e)))}}]
-  (proxy [ActionListener] []
-    (onFailure [e] (on-failure e))
-    (onResponse [r] (on-response (convert r format)))))
+  (reify
+    ActionListener
+    (onFailure [this e] (on-failure e))
+    (onResponse [this r] (on-response (convert r format)))
+    ComposableListener
+    (getFailureHandler [this] on-failure)
+    (getResponseHandler [this] on-response)
+    (getFormat [this] format)
+    (compose [this listener]
+      (make-listener {:format :clj
+                      :on-failure (getFailureHandler this)
+                      :on-response (comp
+                                    (getResponseHandler this)
+                                    (getResponseHandler listener))}))))
 
 (deftype ESPromise [es-promise]
   clojure.lang.IDeref
@@ -396,10 +415,11 @@
   (ESPromise. (promise)))
 
 (defn make-async-listener
-  ([es-promise {:keys [format timeout] :or {format :clj}}]
+  ([es-promise {:keys [format timeout async-callback]
+                :or {format :clj async-callback identity}}]
      (make-listener
       {:format format
-       :on-response (fn [r] (deliver es-promise r))
+       :on-response (fn [r] (deliver es-promise (async-callback r)))
        :on-failure (fn [e] (deliver es-promise e))}))
   ([es-promise]
      (make-async-listener es-promise {})))
@@ -432,7 +452,11 @@
   (getClient ^Client [this] "returns a Elasticsearch Client instance"))
 
 (extend-protocol PClient
+  org.elasticsearch.node.internal.InternalNode
+  (getClient [this] (.client this))
   TransportClient
+  (getClient [this] this)
+  org.elasticsearch.client.node.NodeClient
   (getClient [this] this))
 
 (defrecord ESNodeClient [^org.elasticsearch.node.Node node
@@ -754,6 +778,31 @@
            ([options] (make-request *client* options)))
          assoc :arglists arglists :doc fn-doc)))))
 
+(defn make-requester-wrapper
+  [requester & {:keys [on-params on-response argslist fn-doc]
+                :or {on-params identity on-response identity
+                     argslist [['client 'params]
+                               ['params]]
+                     fn-doc "Generated based on another requester."}}]
+  (vary-meta
+   (fn make-request
+     ([client options]
+        (let [{:keys [mode listener] :as opts} (on-params options)
+              [comp-opts wrapper]
+              (cond
+               listener (let [base-listener
+                              (make-listener [:on-response (fn [r] (on-response opts r))])]
+                          [(assoc opts :listener (compose listener base-listener))
+                           (fn [_ obj] obj)])
+               (= mode :async) [(update-in opts [:async-callback]
+                                           (fn [old cb] (if old (comp cb old) cb))
+                                           (partial on-response opts))
+                                (fn [_ obj] obj)]
+               :else [opts on-response])]
+          (wrapper opts (requester client comp-opts))))
+     ([options] (make-request *client* options)))
+   assoc :argslist argslist :doc fn-doc))
+
 (defmacro def-requests
   ^{:private true}
   [client-type & request-defs]
@@ -810,6 +859,25 @@
   (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids] [])
   (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids] [])
   (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" [] []))
+
+(def get-mapping
+  (make-requester-wrapper
+   cluster-state
+   :on-params (fn [{:keys [indices] :as params}]
+                (merge params
+                       {:filter-blocks? true
+                        :filter-nodes? true
+                        :filter-routing-table? true
+                        :format :clj}
+                       (when indices {:filtered-indices indices})))
+   :on-response (fn [{:keys [types]} resp]
+                  (let [mappings (get-in resp [:state :meta-data :indices] {})]
+                    (into {}
+                          (map (fn [[idx state]]
+                                 [idx (if-not (empty? types)
+                                        (select-keys (:mappings state) state)
+                                        (:mappings state))])
+                               mappings))))))
 
 (defn atomic-update-from-source
   "atomically updates a document with an optimistic concurrency control policy.
