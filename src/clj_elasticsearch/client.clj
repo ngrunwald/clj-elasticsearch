@@ -408,7 +408,9 @@
   [^Method method]
   (let [name (.getName method)
         parameter (first (seq (.getParameterTypes method)))
-        conv (str/replace name #"^set|^get|^is" "")
+        conv (if-not (#{"get" "set" "is"} name)
+               (str/replace name #"^set|^get|^is" "")
+               name)
         conv (str/lower-case (str/replace conv #"(\p{Lower})(\p{Upper})" "$1-$2"))
         added (if (and parameter
                        (or (= java.lang.Boolean parameter)
