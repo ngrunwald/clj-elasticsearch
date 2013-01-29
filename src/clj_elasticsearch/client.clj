@@ -525,10 +525,12 @@
   (for [^Class klass (.getParameterTypes method)]
    (cond
     (= String klass)
-    {:method method :mapper identity :doc "String"}
+    {:method method :mapper name :doc "String"}
     (.isArray klass)
     (let [k (.getComponentType klass)
-          mapper (fn [args] (into-array k args))
+          mapper (if (= k String)
+                   (fn [args] (into-array k (map name args)))
+                   (fn [args] (into-array k args)))
           doc (str "seq of " (clean-class-name k) "s")]
       {:method method :mapper mapper :doc doc})
     (.isEnum klass)
