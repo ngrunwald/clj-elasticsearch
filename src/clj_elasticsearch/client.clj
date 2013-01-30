@@ -355,6 +355,20 @@
   ([response]
      (convert* response {})))
 
+(defn- method->arg
+  [^Method method]
+  (let [name (.getName method)
+        parameter (first (seq (.getParameterTypes method)))
+        conv (if-not (#{"get" "set" "is"} name)
+               (str/replace name #"^set|^get|^is" "")
+               name)
+        conv (str/lower-case (str/replace conv #"(\p{Lower})(\p{Upper})" "$1-$2"))
+        added (if (and parameter
+                       (or (= java.lang.Boolean parameter)
+                           (= parameter java.lang.Boolean/TYPE)))
+                (str conv "?") conv)]
+    added))
+
 (defprotocol ComposableListener
   (compose [this listener] "composes with the given listener, returning a new listener")
   (getFailureHandler [this])
@@ -384,55 +398,28 @@
                                     (getResponseHandler this)
                                     (getResponseHandler listener))}))))
 
-(deftype ESPromise [es-promise]
-  clojure.lang.IDeref
-  (deref [_]
-    (let [res (deref es-promise)]
-      (if (instance? Exception res)
-        (throw res)
-        res)))
-  clojure.lang.IBlockingDeref
-  (deref
-    [_ timeout-ms timeout-val]
-    (let [res (deref es-promise timeout-ms timeout-val)]
-      (if (and (instance? Exception res)
-               (not= res timeout-val))
-        (throw res)
-        res)))
-  clojure.lang.IPending
-  (isRealized [_] (realized? es-promise))
-  clojure.lang.IFn
-  (invoke
-    [_ x]
-    (deliver es-promise x)))
-
-(defn make-es-promise
-  []
-  (ESPromise. (promise)))
-
-(defn make-async-listener
-  ([es-promise {:keys [format timeout async-callback]
-                :or {format :clj async-callback identity}}]
-     (make-listener
-      {:format format
-       :on-response (fn [r] (deliver es-promise (async-callback r)))
-       :on-failure (fn [e] (deliver es-promise e))}))
-  ([es-promise]
-     (make-async-listener es-promise {})))
-
-(defn- method->arg
-  [^Method method]
-  (let [name (.getName method)
-        parameter (first (seq (.getParameterTypes method)))
-        conv (if-not (#{"get" "set" "is"} name)
-               (str/replace name #"^set|^get|^is" "")
-               name)
-        conv (str/lower-case (str/replace conv #"(\p{Lower})(\p{Upper})" "$1-$2"))
-        added (if (and parameter
-                       (or (= java.lang.Boolean parameter)
-                           (= parameter java.lang.Boolean/TYPE)))
-                (str conv "?") conv)]
-    added))
+(defn make-es-future
+  [^ActionFuture action-future {:keys [format async-callback]
+                                :or {async-callback identity
+                                     format :clj}}]
+  (reify
+    clojure.lang.IDeref
+    (deref [this]
+      (async-callback (convert (.actionGet action-future) format)))
+    clojure.lang.IBlockingDeref
+    (deref [this timeout-ms timeout-val]
+      (try
+        (async-callback (convert (.actionGet action-future timeout-ms) format))
+        (catch org.elasticsearch.ElasticSearchInterruptedException _
+          timeout-val)))
+    clojure.lang.IPending
+    (isRealized [this] (.isDone action-future))
+    java.util.concurrent.Future
+    (cancel [this int-if-running?] (.cancel action-future int-if-running?))
+    (get [this] (async-callback (convert (.get action-future) format)))
+    (get [this tv tu] (async-callback (convert (.get action-future tv tu) format)))
+    (isCancelled [this] (.isCancelled action-future))
+    (isDone [this] (.isDone action-future))))
 
 (defn class-for-name
   [class-name]
@@ -732,7 +719,7 @@
         mets (update-in mets [:optional] conj
                              [:listener "takes a listener object and makes the call async"]
                              [:format "one of :clj, :json or :java"]
-                             [:async "if set to true, the call returns a Promise instead of blocking"])]
+                             [:async? "if set to true, the call returns a Future instead of blocking"])]
     (format-params-doc mets)))
 
 (defn make-requester
@@ -752,7 +739,7 @@
             arglists [[{:keys (into []
                                     (sort
                                      (map #(-> % name symbol)
-                                          (conj all-args "listener" "format" "async"))))
+                                          (conj all-args "listener" "format" "async?"))))
                         :as 'params}]
                       ['client 'params]]
             response-fields (get-response-class-fields request-class-name)
@@ -766,7 +753,7 @@
             cst (make-constructor r-klass cst-args)]
         (vary-meta
          (fn make-request
-           ([client {:keys [debug listener async] :as options}]
+           ([client {:keys [debug listener async?] :as options}]
               (let [c (get-client-fn client)
                     request (cst options)]
                 (doseq [m setters]
@@ -774,9 +761,8 @@
                 (cond
                  debug request
                  listener (exec c request listener)
-                 async (let [es-promise (make-es-promise)]
-                         (exec c request (make-async-listener es-promise options))
-                         es-promise)
+                 async? (let [ft (exec c request)]
+                          (make-es-future ft options))
                  :else (let [^ActionFuture ft (exec c request)]
                          (convert (.actionGet ft) (:format options))))))
            ([options] (make-request *client* options)))
@@ -791,14 +777,14 @@
   (vary-meta
    (fn make-request
      ([client options]
-        (let [{:keys [async listener] :as opts} (on-params options)
+        (let [{:keys [async? listener] :as opts} (on-params options)
               [comp-opts wrapper]
               (cond
                listener (let [base-listener
                               (make-listener [:on-response (fn [r] (on-response opts r))])]
                           [(assoc opts :listener (compose listener base-listener))
                            (fn [_ obj] obj)])
-               async [(update-in opts [:async-callback]
+               async? [(update-in opts [:async-callback]
                                  (fn [old cb] (if old (comp cb old) cb))
                                  (partial on-response opts))
                       (fn [_ obj] obj)]
@@ -867,7 +853,7 @@
 (def base-wrapped-params-doc
   {:optional
    [[:listener "takes a listener object and makes the call async"]
-    [:async "if set to true, the call returns a Promise instead of blocking"]]})
+    [:async? "if set to true, the call returns a Future instead of blocking"]]})
 
 (defn make-wrapped-doc
   [msg specs]

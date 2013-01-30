@@ -30,9 +30,12 @@ For the most basic use case:
 (def match-all {:query {:match_all {}}})
 (def res (get-in (search es {:indices ["test"] :types ["test"] :extra-source match-all}) [:hits :hits]))
 ```
+
+The difference between the `node` and `transport` clients are detailed in the guide [here](http://www.elasticsearch.org/guide/reference/java-api/client.html). Both are compatible with `clj-elasticsearch`.
+
 Vectors and hashes are converted to arrays. See the doc strings for the arguments used by each method and the javadocs for more details about their use. A convert function can be used to try to translate the returned objects to Clojure or other formats. It can be sprecified by the :format key when calling the various API methods.
 
-You can also use the functions asynchronously by providing a callback listener with the :listener key, as such:
+You can also use the functions asynchronously by providing a callback listener with the `:listener` key, as such:
 
 ```clojure
 (count-docs es {:indices ["test"]
@@ -40,7 +43,7 @@ You can also use the functions asynchronously by providing a callback listener w
                               {:on-failure (fn [e] (error e "error in es listener"))
                                :on-success (fn [res] (println (convert res :clj)))})})
 ```
-or in a simpler way by setting `:async` to `true` and dereferencing the returned promise:
+or in a simpler way by setting `:async` to `true` and dereferencing the returned future:
 
 ```clojure
 (let [p (count-docs es {:indices ["test"] :async true})
@@ -48,23 +51,23 @@ or in a simpler way by setting `:async` to `true` and dereferencing the returned
       c (:count @p)]
   (println "COUNT" c))
 ```
-In this case, if the request was a failure, the corresponding Exception will be thrown when you deref the returned promise. You can try/catch it as usual.
+In this case, if the request was a failure, the corresponding Exception will be thrown when you `deref` the returned future. You can try/catch it as usual. You can also use 3-args version of `deref` to give a timeout to the request.
 
 A bit more details on usage can be found in the tests.
 
 ## Compatibility
 
-clj-elasticsearch is tested from elasticsearch 0.19.0 onward. It might or might not work on older versions.
+`clj-elasticsearch` is tested from elasticsearch `0.19.0` onward. It might or might not work on older versions.
 
 ## See Also
 
-For other Elasticsearch Clojure clients:
+For other elasticsearch Clojure clients:
 
-* [elastisch](https://github.com/clojurewerkz/elastisch): An idiomatic Clojure wrapper for the Http API
-* [esearch](https://github.com/mpenet/clj-esearch): An asynchronous client for the Http API
+* [elastisch](https://github.com/clojurewerkz/elastisch): An idiomatic Clojure wrapper for the HTTP API
+* [esearch](https://github.com/mpenet/clj-esearch): An asynchronous client for the HTTP API
 
 ## License
 
-Copyright (C) 2012 [Linkfluence](http://linkfluence.net)
+Copyright (C) 2012, 2013 [Linkfluence](http://linkfluence.net)
 
 Distributed under the Eclipse Public License, the same as Clojure.
