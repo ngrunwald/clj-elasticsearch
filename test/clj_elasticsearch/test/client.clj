@@ -92,4 +92,7 @@
     (is {:foo "bar" :bar "baz" :ooh "sneaky"}
         (:_source (get-doc {:index "test" :type "vvv" :id "neo"})))
     (is {:foo "bar"}
-        (:_source (get-doc {:index "test" :type "vvv" :id "geo"})))))
+        (:_source (get-doc {:index "test" :type "vvv" :id "geo"})))
+    (is (not (empty? (get (get-mapping {}) "test"))))
+    (is (not (empty? (get @(get-mapping {:mode :async}) "test"))))
+    (is (empty? (get (get-mapping {:types ["wrong"]}) "test")))))

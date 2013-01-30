@@ -714,6 +714,17 @@
       (gav/get-class-fields translator response-class))))
 
 (defn- format-params-doc
+  [methods]
+  (let [ordered-mets (concat (sort (:required methods))
+                             (sort (:optional methods)))
+        max-length (inc (apply max
+                               (mapcat (fn [mets]
+                                         (map #(-> % (first) (str) (count)) mets))
+                                       (vals methods))))]
+    (cl-format false "~2TParams keys:~%~:{~4T~vA=> ~A~%~}"
+               (map #(concat [max-length] %) ordered-mets))))
+
+(defn- format-params-doc-from-sig
   [sig cst-args]
   (let [required (into #{} cst-args)
         mets (reduce (fn [acc [m s]]
@@ -725,11 +736,8 @@
         mets (update-in mets [:optional] conj
                              [:listener "takes a listener object and makes the call async"]
                              [:format "one of :clj, :json or :java"]
-                             [:mode "one of :sync (default) or :async (returns a promise)"])
-        max-length (inc (apply max (map #(count (str %)) (keys sig))))
-        ordered-mets (concat (sort (:required mets)) (sort (:optional mets)))]
-    (cl-format false "~2TParams keys:~%~:{~4T~vA=> ~A~%~}"
-               (map #(concat [max-length] %) ordered-mets))))
+                             [:mode "one of :sync (default) or :async (returns a promise)"])]
+    (format-params-doc mets)))
 
 (defn make-requester
   [client-type request-class-name cst-args req-args]
@@ -752,7 +760,7 @@
                         :as 'params}]
                       ['client 'params]]
             response-fields (get-response-class-fields request-class-name)
-            params-doc (format-params-doc sig (concat cst-args req-args))
+            params-doc (format-params-doc-from-sig sig (concat cst-args req-args))
             fn-doc (format
                     "Generated from Class %s\n%s"
                     request-class-name params-doc)
@@ -860,7 +868,26 @@
   (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids] [])
   (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" [] []))
 
-(def get-mapping
+(def base-wrapped-params-doc
+  {:optional
+   [[:listener "takes a listener object and makes the call async"]
+    [:mode "one of :sync (default) or :async (returns a promise)"]]})
+
+(defn make-wrapped-doc
+  [msg specs]
+  (let [params-str (format-params-doc
+                    (update-in base-wrapped-params-doc
+                               [:optional] concat specs))
+        doc-str (format "%s\n%s" msg params-str)]
+    doc-str))
+
+(def
+  ^{:doc (make-wrapped-doc
+          "Gets mappings from cluster. Wrapper over cluster-state"
+          [[:indices "seq of Strings"]
+           [:types "seq of Strings"]])
+    :arglists [['client 'params] ['params]]}
+  get-mapping
   (make-requester-wrapper
    cluster-state
    :on-params (fn [{:keys [indices] :as params}]
