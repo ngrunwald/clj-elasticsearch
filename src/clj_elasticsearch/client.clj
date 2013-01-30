@@ -134,19 +134,15 @@
     :smile (XContentFactory/smileBuilder)
     (XContentFactory/smileBuilder)))
 
-(defn after-0-19?
-  []
-  (try
-    (>= (.minor Version/CURRENT) 19)
-    (catch Exception _
-      false)))
-
 (defn- make-compatible-decode-smile
-  "produces a fn for backward compatibility with es prior 0.19.0"
+  "produces a fn for backward compatibility with old es version"
   []
-  (if (after-0-19?)
-    (fn [^FastByteArrayOutputStream os] (json/decode-smile (.. os bytes toBytes) true))
-    (fn [^FastByteArrayOutputStream os] (json/decode-smile (.underlyingBytes os) true))))
+  (let [new-met (try
+                  (.getMethod FastByteArrayOutputStream "bytes" (make-array Class 0))
+                  (catch NoSuchMethodException _ nil))]
+    (if new-met
+      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.. os bytes toBytes) true))
+      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.underlyingBytes os) true)))))
 
 (def compatible-decode-smile (make-compatible-decode-smile))
 

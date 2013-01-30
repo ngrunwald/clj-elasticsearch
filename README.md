@@ -1,8 +1,19 @@
 # clj-elasticsearch
 
-A clojure wrapper around the native Java Elasticsearch API. It aims to be as idiomatic as possible while remaining fast.
+A clojure wrapper around the native Java elasticsearch API. It aims to be as idiomatic as possible while remaining fast.
 
 The API docs are available [here](http://ngrunwald.github.com/clj-elasticsearch).
+
+## Installation
+
+`clj-elasticsearch` is available as a Maven artifact from [Clojars](http://clojars.org/clj-elasticsearch).
+
+However, the elasticsearch artefact must also be included, and as a rule of thumb you should always pull exactly the same version of the artifact as the one used by the server to which you want to connect. Otherwise, you might get strange compatibility bugs, especially with the `Node` client.
+
+```clojure
+[clj-elasticsearch "0.4.0-SNAPSHOT"]
+[org.elasticsearch/elasticsearch "0.20.4"]
+```
 
 ## Usage
 
@@ -37,13 +48,13 @@ or in a simpler way by setting `:async` to `true` and dereferencing the returned
       c (:count @p)]
   (println "COUNT" c))
 ```
-In this case, if the request was a failure, the corresponding `Exception` will be thrown when you deref the returned promise. You can try/catch it as usual.
+In this case, if the request was a failure, the corresponding Exception will be thrown when you deref the returned promise. You can try/catch it as usual.
 
 A bit more details on usage can be found in the tests.
 
 ## Compatibility
 
-clj-elasticsearch is tested on all major versions from elasticsearch 0.18.0 onward. It might or might not work on older versions.
+clj-elasticsearch is tested from elasticsearch 0.19.0 onward. It might or might not work on older versions.
 
 ## See Also
 
