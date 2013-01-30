@@ -53,7 +53,7 @@
     (count-docs {:indices ["test"] :listener l})
     (Thread/sleep 100)
     (is (= 1 @c)))
-  (is (= 1 (:count (deref (count-docs {:indices ["test"] :mode :async})))))
+  (is (= 1 (:count (deref (count-docs {:indices ["test"] :async true})))))
   (let [status (index-status {:indices ["test"]})]
     (is (=  1 (get-in status [:indices :test :docs :num_docs]))))
   (let [d (get-doc {:index "test" :type "tyu" :id "mid" :fields ["field1" "field2" "field3"]})]
@@ -94,5 +94,5 @@
     (is {:foo "bar"}
         (:_source (get-doc {:index "test" :type "vvv" :id "geo"})))
     (is (not (empty? (get (get-mapping {}) "test"))))
-    (is (not (empty? (get @(get-mapping {:mode :async}) "test"))))
+    (is (not (empty? (get @(get-mapping {:async true}) "test"))))
     (is (empty? (get (get-mapping {:types ["wrong"]}) "test")))))

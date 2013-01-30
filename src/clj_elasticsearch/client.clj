@@ -736,7 +736,7 @@
         mets (update-in mets [:optional] conj
                              [:listener "takes a listener object and makes the call async"]
                              [:format "one of :clj, :json or :java"]
-                             [:mode "one of :sync (default) or :async (returns a promise)"])]
+                             [:async "if set to true, the call returns a Promise instead of blocking"])]
     (format-params-doc mets)))
 
 (defn make-requester
@@ -756,7 +756,7 @@
             arglists [[{:keys (into []
                                     (sort
                                      (map #(-> % name symbol)
-                                          (conj all-args "listener" "format" "mode"))))
+                                          (conj all-args "listener" "format" "async"))))
                         :as 'params}]
                       ['client 'params]]
             response-fields (get-response-class-fields request-class-name)
@@ -770,7 +770,7 @@
             cst (make-constructor r-klass cst-args)]
         (vary-meta
          (fn make-request
-           ([client {:keys [debug listener mode] :as options}]
+           ([client {:keys [debug listener async] :as options}]
               (let [c (get-client-fn client)
                     request (cst options)]
                 (doseq [m setters]
@@ -778,9 +778,9 @@
                 (cond
                  debug request
                  listener (exec c request listener)
-                 (= mode :async) (let [es-promise (make-es-promise)]
-                                   (exec c request (make-async-listener es-promise options))
-                                   es-promise)
+                 async (let [es-promise (make-es-promise)]
+                         (exec c request (make-async-listener es-promise options))
+                         es-promise)
                  :else (let [^ActionFuture ft (exec c request)]
                          (convert (.actionGet ft) (:format options))))))
            ([options] (make-request *client* options)))
@@ -795,17 +795,17 @@
   (vary-meta
    (fn make-request
      ([client options]
-        (let [{:keys [mode listener] :as opts} (on-params options)
+        (let [{:keys [async listener] :as opts} (on-params options)
               [comp-opts wrapper]
               (cond
                listener (let [base-listener
                               (make-listener [:on-response (fn [r] (on-response opts r))])]
                           [(assoc opts :listener (compose listener base-listener))
                            (fn [_ obj] obj)])
-               (= mode :async) [(update-in opts [:async-callback]
-                                           (fn [old cb] (if old (comp cb old) cb))
-                                           (partial on-response opts))
-                                (fn [_ obj] obj)]
+               async [(update-in opts [:async-callback]
+                                 (fn [old cb] (if old (comp cb old) cb))
+                                 (partial on-response opts))
+                      (fn [_ obj] obj)]
                :else [opts on-response])]
           (wrapper opts (requester client comp-opts))))
      ([options] (make-request *client* options)))
@@ -871,7 +871,7 @@
 (def base-wrapped-params-doc
   {:optional
    [[:listener "takes a listener object and makes the call async"]
-    [:mode "one of :sync (default) or :async (returns a promise)"]]})
+    [:async "if set to true, the call returns a Promise instead of blocking"]]})
 
 (defn make-wrapped-doc
   [msg specs]

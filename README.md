@@ -29,10 +29,10 @@ You can also use the functions asynchronously by providing a callback listener w
                               {:on-failure (fn [e] (error e "error in es listener"))
                                :on-success (fn [res] (println (convert res :clj)))})})
 ```
-or in a simpler way by using async mode and dereferencing the returned promise:
+or in a simpler way by setting `:async` to `true` and dereferencing the returned promise:
 
 ```clojure
-(let [p (count-docs es {:indices ["test"] :mode :async})
+(let [p (count-docs es {:indices ["test"] :async true})
       ;; do work here, then when you need it:
       c (:count @p)]
   (println "COUNT" c))
