@@ -51,9 +51,13 @@
         l (make-listener {:on-response (fn [r] (reset! c (:count r)))
                           :format :clj})]
     (count-docs {:indices ["test"] :listener l})
-    (Thread/sleep 100)
+    (Thread/sleep 50)
     (is (= 1 @c)))
-  (is (= 1 (:count (deref (count-docs {:indices ["test"] :async? true})))))
+  (let [ft (count-docs {:indices ["test"] :async? true})]
+    (is (future? ft))
+    (is (= 1 (:count @ft)))
+    (is (realized? ft))
+    (is (not (future-cancelled? ft))))
   (let [status (index-status {:indices ["test"]})]
     (is (=  1 (get-in status [:indices :test :docs :num_docs]))))
   (let [d (get-doc {:index "test" :type "tyu" :id "mid" :fields ["field1" "field2" :field3]})]
