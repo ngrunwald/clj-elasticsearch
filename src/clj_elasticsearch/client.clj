@@ -419,7 +419,16 @@
     (get [this] (async-callback (convert (.get action-future) format)))
     (get [this tv tu] (async-callback (convert (.get action-future tv tu) format)))
     (isCancelled [this] (.isCancelled action-future))
-    (isDone [this] (.isDone action-future))))
+    (isDone [this] (.isDone action-future))
+    ActionFuture
+    (actionGet [this] (.actionGet action-future))
+    (actionGet [this ^long ms] (.actionGet action-future ms))
+    (actionGet [this ^long ms ^java.util.concurrent.TimeUnit tu]
+      (.actionGet action-future ms) tu)
+    (actionGet [this ^String to] (.actionGet action-future to))
+    (actionGet [this ^org.elasticsearch.common.unit.TimeValue tv]
+      (.actionGet action-future tv))
+    (getRootFailure [this] (.getRootFailure action-future))))
 
 (defn class-for-name
   [class-name]
