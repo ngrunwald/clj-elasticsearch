@@ -151,7 +151,7 @@
   (cond
    (instance? java.util.HashMap src) (into {}
                                            (map (fn [^java.util.Map$Entry e]
-                                                  [(.getKey e)
+                                                  [(keyword (.getKey e))
                                                    (convert-source-result (.getValue e))]) src))
    (instance? java.util.ArrayList src) (into [] (map convert-source-result src))
    :else src))
@@ -159,7 +159,7 @@
 (defn- convert-fields
   [^java.util.HashMap hm]
   (into {} (map (fn [^org.elasticsearch.index.get.GetField f]
-                  [(.getName f) (convert-source-result (.getValue f))]) (.values hm))))
+                  [(keyword (.getName f)) (convert-source-result (.getValue f))]) (.values hm))))
 
 (defn- convert-get
   [_ ^org.elasticsearch.action.get.GetResponse response _]
@@ -315,7 +315,7 @@
                                    (into {} (.getAsMap o)))]
               ["org.elasticsearch.cluster.metadata.MappingMetaData"
                :custom-converter (fn [tr ^org.elasticsearch.cluster.metadata.MappingMetaData o opts]
-                                   (gav/translate tr (.getSourceAsMap o) opts))]]))
+                                   (convert-source-result (.getSourceAsMap o)))]]))
         ;; handle enums
         translator (reduce
                     (fn [t klass]

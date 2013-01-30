@@ -43,12 +43,12 @@ You can also use the functions asynchronously by providing a callback listener w
                               {:on-failure (fn [e] (error e "error in es listener"))
                                :on-success (fn [res] (println (convert res :clj)))})})
 ```
-or in a simpler way by setting `:async` to `true` and dereferencing the returned future:
+or in a simpler way by setting `:async?` to `true` and dereferencing the returned future:
 
 ```clojure
-(let [p (count-docs es {:indices ["test"] :async true})
+(let [ft (count-docs es {:indices ["test"] :async? true})
       ;; do work here, then when you need it:
-      c (:count @p)]
+      c (:count @ft)]
   (println "COUNT" c))
 ```
 In this case, if the request was a failure, the corresponding Exception will be thrown when you `deref` the returned future. You can try/catch it as usual. You can also use 3-args version of `deref` to give a timeout to the request.

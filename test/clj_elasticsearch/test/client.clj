@@ -56,13 +56,14 @@
   (is (= 1 (:count (deref (count-docs {:indices ["test"] :async? true})))))
   (let [status (index-status {:indices ["test"]})]
     (is (=  1 (get-in status [:indices :test :docs :num_docs]))))
-  (let [d (get-doc {:index "test" :type "tyu" :id "mid" :fields ["field1" "field2" "field3"]})]
+  (let [d (get-doc {:index "test" :type "tyu" :id "mid" :fields ["field1" "field2" :field3]})]
     (is (nil? (:_source d)))
-    (is (= {"tyu" {"foo" "bar"}} (get-in d [:fields "field3"]))))
+    (is (= {:tyu {:foo "bar"}} (get-in d [:fields :field3])))
+    (is (= ["toto" "tutu"] (get-in d [:fields :field1]))))
   (let [d (get-doc {:index "test" :type "tyu" :id "mid"})]
     (is (nil? (:fields d)))
-    (is (= {"tyu" {"foo" "bar"}} (get-in d [:_source "field3"])))
-    (is (= ["toto" "tutu"] (get-in d [:_source "field1"]))))
+    (is (= {:tyu {:foo "bar"}} (get-in d [:_source :field3])))
+    (is (= ["toto" "tutu"] (get-in d [:_source :field1]))))
   (is (get-in (first
                (get-in (search {:indices ["test"] :types ["tyu"]
                                 :extra-source match-all :search-type :query-then-fetch})
