@@ -31,7 +31,7 @@ For the most basic use case:
 (def res (get-in (search es {:indices ["test"] :types ["test"] :extra-source match-all}) [:hits :hits]))
 ```
 
-The difference between the `node` and `transport` clients are detailed in the guide [here](http://www.elasticsearch.org/guide/reference/java-api/client.html). Both are compatible with `clj-elasticsearch`.
+The difference between the `:node` and `:transport` clients are detailed in the guide [here](http://www.elasticsearch.org/guide/reference/java-api/client.html). Both are compatible with `clj-elasticsearch`.
 
 Vectors and hashes are converted to arrays. See the doc strings for the arguments used by each method and the javadocs for more details about their use. A convert function can be used to try to translate the returned objects to Clojure or other formats. It can be sprecified by the :format key when calling the various API methods.
 
