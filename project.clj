@@ -2,7 +2,7 @@
   :description "Native Java API client wrapper for Elasticsearch"
   :dependencies [[org.clojure/clojure "1.4.0"]
                  [cheshire "5.0.1"]
-                 [gavagai "0.3.1-SNAPSHOT"]]
+                 [gavagai "0.3.1"]]
   :plugins [[codox "0.6.3"]]
   :profiles {:dev {:dependencies [[org.elasticsearch/elasticsearch "0.20.4"]]}
              :0.20 {:dependencies [[org.elasticsearch/elasticsearch "0.20.0"]]}
