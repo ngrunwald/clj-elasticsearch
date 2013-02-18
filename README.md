@@ -11,8 +11,8 @@ The API docs are available [here](http://ngrunwald.github.com/clj-elasticsearch)
 However, the elasticsearch artefact must also be included, and as a rule of thumb you should always pull exactly the same version of the artifact as the one used by the server to which you want to connect. Otherwise, you might get strange compatibility bugs, especially with the `Node` client.
 
 ```clojure
-[clj-elasticsearch "0.4.0-SNAPSHOT"]
-[org.elasticsearch/elasticsearch "0.20.4"]
+[clj-elasticsearch "0.4.0-RC1"]
+[org.elasticsearch/elasticsearch "0.20.5"]
 ```
 
 ## Usage

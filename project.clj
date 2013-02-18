@@ -3,7 +3,7 @@
   :dependencies [[org.clojure/clojure "1.4.0"]
                  [cheshire "5.0.1"]
                  [gavagai "0.3.1"]]
-  :plugins [[codox "0.6.3"]]
+  :plugins [[codox "0.6.4"]]
   :profiles {:dev {:dependencies [[org.elasticsearch/elasticsearch "0.20.5"]]}
              :0.20 {:dependencies [[org.elasticsearch/elasticsearch "0.20.0"]]}
              :0.19 {:dependencies [[org.elasticsearch/elasticsearch "0.19.0"]]}}
