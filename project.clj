@@ -9,6 +9,6 @@
              :0.19 {:dependencies [[org.elasticsearch/elasticsearch "0.19.0"]]}}
   :repositories {"sonatype.org" "http://oss.sonatype.org/content/repositories/releases/"}
   :url "https://github.com/ngrunwald/clj-elasticsearch"
-  :codox {:src-dir-uri "http://github.com/ngrunwald/clj-elasticsearch/blob/master"
+  :codox {:src-dir-uri "https://github.com/ngrunwald/clj-elasticsearch/blob/v0.4.0-RC1"
           :src-linenum-anchor-prefix "L"}
   :warn-on-reflection true)
