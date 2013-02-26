@@ -20,7 +20,7 @@ However, the elasticsearch artefact must also be included, and as a rule of thum
 For the most basic use case:
 
 ```clojure
-(use 'clj-elasticsearch)
+(use 'clj-elasticsearch.client)
 
 (def es (make-client :transport {:hosts ["localhost:9300"] :cluster-name "elasticsearch"}))
 
