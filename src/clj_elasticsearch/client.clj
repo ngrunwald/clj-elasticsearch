@@ -134,18 +134,6 @@
     :smile (XContentFactory/smileBuilder)
     (XContentFactory/smileBuilder)))
 
-(defn- make-compatible-decode-smile
-  "produces a fn for backward compatibility with old es version"
-  []
-  (let [new-met (try
-                  (.getMethod FastByteArrayOutputStream "bytes" (make-array Class 0))
-                  (catch NoSuchMethodException _ nil))]
-    (if new-met
-      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.. os bytes toBytes) true))
-      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.underlyingBytes os) true)))))
-
-(def compatible-decode-smile (make-compatible-decode-smile))
-
 (defn- convert-source-result
   [src]
   (cond
@@ -159,17 +147,17 @@
 (defn- convert-fields
   [^java.util.HashMap hm]
   (into {} (map (fn [^org.elasticsearch.index.get.GetField f]
-                  [(keyword (.getName f)) (convert-source-result (.getValue f))]) (.values hm))))
+                  [(keyword (.getName f)) (convert-source-result (if (>= 1 (count (.getValues f))) (.getValue f) #_else (.getValues f)))]) (.values hm))))
 
 (defn- convert-get
   [_ ^org.elasticsearch.action.get.GetResponse response _]
-  (let [data (if (.exists response)
+  (let [data (if (.isExists response)
                {:_index (.getIndex response)
                 :_type (.getType response)
                 :_id (.getId response)
                 :_version (.getVersion response)})
         data (if-not (.isSourceEmpty response)
-               (assoc data :_source (convert-source-result (.sourceAsMap response)))
+               (assoc data :_source (convert-source-result (.getSourceAsMap response)))
                data)
         data (let [fields (.getFields response)]
                (if-not (empty? fields)
@@ -196,7 +184,7 @@
     (.toXContent response builder empty-params)
     (.endObject builder)
     (.flush builder)
-    (compatible-decode-smile os)))
+    (json/decode-smile (.. os bytes toBytes) true)))
 
 (defn- make-xconverter
   [class-name]
@@ -289,9 +277,6 @@
               ["org.elasticsearch.cluster.routing.RoutingNodes" :exclude [:blocks]]
               ["org.elasticsearch.cluster.routing.IndexRoutingTable"]
               ["org.elasticsearch.action.admin.cluster.node.stats.NodeStats"]
-              ;; for es < 0.20
-              ["org.elasticsearch.action.admin.indices.exists.IndicesExistsResponse"
-               :throw? false]
               ;; for es > 0.20
               ["org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse"
                :throw? false]
@@ -341,7 +326,7 @@
                  "org.elasticsearch.action.admin.indices.segments.IndicesSegmentResponse"
                  "org.elasticsearch.action.admin.indices.status.IndicesStatusResponse"
                  "org.elasticsearch.action.admin.indices.stats.CommonStats"
-                 "org.elasticsearch.action.admin.indices.stats.IndicesStats"
+                 "org.elasticsearch.action.admin.indices.stats.IndicesStatsResponse"
                  "org.elasticsearch.indices.NodeIndicesStats"
                  "org.elasticsearch.common.xcontent.ToXContent"])))
 
@@ -836,8 +821,6 @@
   (delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest" [:indices] [])
   (delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingRequest" [:indices] [])
   (delete-template "org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateRequest" [:name] [])
-  ;; for es < 0.20
-  (exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsRequest" [:indices] [])
   ;; for es > 0.20
   (exists-index "org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest" [:indices] [])
   (flush-index "org.elasticsearch.action.admin.indices.flush.FlushRequest" [:indices] [])
@@ -856,7 +839,8 @@
   (node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequest" [] [])
   (node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartRequest" [:nodes-ids] [])
   (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids] [])
-  (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids] [])
+  ;;; Method signature problem with method indices from class class org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest {:class org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest, :method "indices", :types #{boolean org.elasticsearch.action.admin.indices.stats.CommonStatsFlags}, :count 2, :all-methods [#<Method public org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest.indices(boolean)> #<Method public org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest.indices(org.elasticsearch.action.admin.indices.stats.CommonStatsFlags)>]}
+  ;(nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids] [])
   (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" [] []))
 
 (def base-wrapped-params-doc
