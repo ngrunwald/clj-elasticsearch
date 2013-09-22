@@ -8,7 +8,7 @@
            [org.elasticsearch.common.settings ImmutableSettings ImmutableSettings$Builder]
            [org.elasticsearch.action.admin.indices.status IndicesStatusRequest]
            [org.elasticsearch.action ActionFuture]
-           [org.elasticsearch.common.io FastByteArrayOutputStream]
+           [org.elasticsearch.common.io.stream BytesStreamOutput]
            [org.elasticsearch.client.transport TransportClient]
            [org.elasticsearch.client.support AbstractClient]
            [org.elasticsearch.node Node]
@@ -176,7 +176,7 @@
 
 (defn- convert-xcontent
   [^org.elasticsearch.common.xcontent.ToXContent response empty-params]
-  (let [os (FastByteArrayOutputStream.)
+  (let [os (BytesStreamOutput.)
         builder (if (= format :json)
                   (XContentFactory/jsonBuilder os)
                   (XContentFactory/smileBuilder os))]
