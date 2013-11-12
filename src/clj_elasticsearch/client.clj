@@ -541,29 +541,36 @@
 (defn- make-settable
   [method]
   (for [^Class klass (.getParameterTypes method)]
-   (cond
-    (= String klass)
-    {:method method :mapper name :doc "String"}
-    (.isArray klass)
-    (let [k (.getComponentType klass)
-          mapper (if (= k String)
-                   (fn [args] (into-array k (map name args)))
-                   (fn [args] (into-array k args)))
-          doc (str "seq of " (clean-class-name k) "s")]
-      {:method method :mapper mapper :doc doc})
-    (.isEnum klass)
-    (let [[table _] (make-enum-tables klass)
-          mapper (fn [arg]
-                   (get table arg arg))
-          doc (make-enum-doc-string table)]
-      {:method method :mapper mapper :doc doc})
-    (= org.elasticsearch.search.Scroll klass)
-    (let [mapper (fn [arg]
-                   (Scroll. (TimeValue/parseTimeValue arg nil)))
-          doc "String time spec (ex: \"5s\")"]
-      {:method method :mapper mapper :doc doc})
-    :else
-    {:method method :mapper identity :doc (clean-class-name klass)})))
+    (cond
+     (= String klass)
+     {:method method :mapper name :doc "String" :rest-type :string :rest-doc "String"}
+     (.isArray klass)
+     (let [k (.getComponentType klass)
+           mapper (if (= k String)
+                    (fn [args] (into-array k (map name args)))
+                    (fn [args] (into-array k args)))
+           doc (str "seq of " (clean-class-name k) "s")]
+       {:method method :mapper mapper :doc doc
+        :rest-type :string-or-list-of-strings :rest-doc "String or seq of Strings"})
+     (.isEnum klass)
+     (let [[table _] (make-enum-tables klass)
+           mapper (fn [arg]
+                    (get table arg arg))
+           doc (make-enum-doc-string table)]
+       {:method method :mapper mapper :doc doc
+        :rest-type (mapv keyword (keys table)) :rest-doc doc})
+     (= org.elasticsearch.search.Scroll klass)
+     (let [mapper (fn [arg]
+                    (Scroll. (TimeValue/parseTimeValue arg nil)))
+           doc "String time spec (ex: \"5s\")"]
+       {:method method :mapper mapper :doc doc
+        :rest-type :time-string :rest-doc doc})
+     (= "boolean" (str klass))
+     {:method method :mapper identity :doc (clean-class-name klass)
+      :rest-type :boolean :rest-doc "boolean"}
+     :else
+     {:method method :mapper identity :doc (clean-class-name klass)
+      :rest-type :string :rest-doc "String"})))
 
 (defn- get-settable-methods
   [^Class klass]
@@ -587,8 +594,10 @@
            (let [met (get sigs org.elasticsearch.common.settings.Settings$Builder)
                  mapper (fn [arg]
                           (update-settings-builder arg))
-                 doc "HashMap of Settings"]
-             {:method met :mapper mapper :doc doc})
+                 doc "HashMap of Settings"
+                 rest-type :hash-map-or-json
+                 rest-doc "Hash-map or JSON string"]
+             {:method met :mapper mapper :doc doc :rest-type rest-type :rest-doc rest-doc})
            ;; mapping fields
            (and
             (contains? types org.elasticsearch.common.xcontent.XContentBuilder)
@@ -598,21 +607,27 @@
                  mapper (fn [arg]
                           (if (string? arg)
                             arg
-                            (json/encode arg)))]
-             {:method met :mapper mapper :doc doc})
+                            (json/encode arg)))
+                 rest-type :hash-map-or-json
+                 rest-doc "Hash-map or JSON string"]
+             {:method met :mapper mapper :doc doc :rest-type rest-type :rest-doc rest-doc})
            ;; source fields
            (contains? types org.elasticsearch.common.xcontent.XContentBuilder)
            (let [met (get sigs bytes-array-class)
                  doc "HashMap or JSON String or SMILE bytes-array"
                  mapper (fn [arg]
-                          (convert-source arg))]
-             {:method met :mapper mapper :doc doc})
+                          (convert-source arg))
+                 rest-type :hash-map-or-json
+                 rest-doc "Hash-map or JSON string"]
+             {:method met :mapper mapper :doc doc :rest-type rest-type :rest-doc rest-doc})
            ;; timeout field
            (contains? types org.elasticsearch.common.unit.TimeValue)
            (let [met (get sigs String)
                  mapper identity
-                 doc "String time spec (ex: \"5s\")"]
-             {:method met :mapper mapper :doc doc})
+                 doc "String time spec (ex: \"5s\")"
+                 rest-type :time-string
+                 rest-doc doc]
+             {:method met :mapper mapper :doc doc :rest-type rest-type :rest-doc rest-doc})
            ;; enums
            (some (fn [^Class t] (.isEnum t)) (keys sigs))
            (let [t (first (filter (fn [^Class t] (.isEnum t)) (keys sigs)))
@@ -620,8 +635,10 @@
                  met (get sigs t)
                  mapper (fn [arg]
                           (get table arg arg))
-                 doc (make-enum-doc-string table)]
-             {:method met :mapper mapper :doc doc})
+                 doc (make-enum-doc-string table)
+                 rest-type (mapv keyword (keys table))
+                 rest-doc doc]
+             {:method met :mapper mapper :doc doc :rest-type rest-type :rest-doc rest-doc})
            ;; routing field
            (and (contains? sigs String) (contains? sigs (type (make-array String 0))))
            (let [met (get sigs (type (make-array String 0)))
@@ -629,8 +646,10 @@
                           (if (string? arg)
                             [arg]
                             (into-array String arg)))
-                 doc "String or seq of Strings"]
-             {:method met :mapper mapper :doc doc})
+                 doc "String or seq of Strings"
+                 rest-type :string-or-list-of-strings
+                 rest-doc doc]
+             {:method met :mapper mapper :doc doc :rest-type rest-type :rest-doc rest-doc})
            :else
            (throw
             (ex-info
@@ -660,6 +679,15 @@
                         (.invoke method obj (into-array Object
                                                         (list (mapper arg)))))))
                   merge {::type-doc doc})]))]
+    (into {} fns)))
+
+
+(defn request-rest-signature
+  [^Class klass]
+  (let [methods (get-settable-methods klass)
+        fns (for [{:keys [^Method method rest-type rest-doc]} methods]
+              (let [m-name (-> method (method->arg) (keyword))]
+                [m-name [rest-type rest-doc]]))]
     (into {} fns)))
 
 (defn select-vals
@@ -732,7 +760,7 @@
     (format-params-doc mets)))
 
 (defn make-requester
-  [client-type request-class-name cst-args req-args]
+  [request-class-name {client-type :impl cst-args :constructor req-args :required}]
   (if-let [r-klass (class-for-name request-class-name)]
     (if-let [c-klass (get client-types client-type)]
       (let [sig (request-signature r-klass)
@@ -802,62 +830,104 @@
      ([options] (make-request *client* options)))
    assoc :argslist argslist :doc fn-doc))
 
-(defmacro def-requests
-  ^{:private true}
-  [client-type & request-defs]
-  `(do ~@(map (fn [req-def]
-                `(if-let [req-fn# (make-requester
-                                   ~@(concat [client-type] (rest req-def)))]
-                   (let [symb-name# (vary-meta '~(first req-def) merge (meta req-fn#))]
-                     (intern 'clj-elasticsearch.client
-                             symb-name#
-                             req-fn#))))
-              request-defs)))
+(defn- defn-requests
+  [specs]
+  (doseq [[class-name {:keys [symb impl constructor required] :as spec}] specs]
+    (if-let [req-fn (make-requester class-name spec)]
+      (let [symb-name (vary-meta symb merge (meta req-fn))]
+        (intern 'clj-elasticsearch.client symb-name req-fn)))))
 
-(def-requests :client
-  (index-doc "org.elasticsearch.action.index.IndexRequest" [:index] [:source :type])
-  (search "org.elasticsearch.action.search.SearchRequest" [] [])
-  (get-doc "org.elasticsearch.action.get.GetRequest" [:index] [:id])
-  (count-docs "org.elasticsearch.action.count.CountRequest" [:indices] [])
-  (delete-doc "org.elasticsearch.action.delete.DeleteRequest" [:index :type :id] [])
-  (delete-by-query "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest" [] [:query])
-  (more-like-this "org.elasticsearch.action.mlt.MoreLikeThisRequest" [:index] [:id :type])
-  (percolate "org.elasticsearch.action.percolate.PercolateRequest" [:index :type] [:source])
-  (scroll "org.elasticsearch.action.search.SearchScrollRequest" [:scroll-id] [])
-  ;; for es > 0.20
-  (update-doc "org.elasticsearch.action.update.UpdateRequest" [:index :type :id] [:script]))
+(defn make-rest-fns-blueprint
+  [specs]
+  (reduce (fn [acc [class-name {:keys [symb constructor required] :as spec}]]
+            (if-let [klass (class-for-name class-name)]
+              (assoc acc (-> symb (name) (keyword)) (request-rest-signature klass))
+              acc))
+          {} specs))
 
-(def-requests :indices
-  (optimize-index "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest" [] [])
-  (analyze-request "org.elasticsearch.action.admin.indices.analyze.AnalyzeRequest" [:index :text] [])
-  (clear-index-cache "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheRequest" [:indices] [])
-  (close-index "org.elasticsearch.action.admin.indices.close.CloseIndexRequest" [:index] [])
-  (create-index "org.elasticsearch.action.admin.indices.create.CreateIndexRequest" [:index] [])
-  (delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest" [:indices] [])
-  (delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingRequest" [:indices] [])
-  (delete-template "org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateRequest" [:name] [])
-  ;; for es < 0.20
-  (exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsRequest" [:indices] [])
-  ;; for es > 0.20
-  (exists-index "org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest" [:indices] [])
-  (flush-index "org.elasticsearch.action.admin.indices.flush.FlushRequest" [:indices] [])
-  (gateway-snapshot "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotRequest" [:indices] [])
-  (put-mapping "org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest" [:indices] [])
-  (put-template "org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateRequest" [:name] [])
-  (refresh-index "org.elasticsearch.action.admin.indices.refresh.RefreshRequest" [:indices] [])
-  (index-segments "org.elasticsearch.action.admin.indices.segments.IndicesSegmentsRequest" [] [])
-  (index-stats "org.elasticsearch.action.admin.indices.stats.IndicesStatsRequest" [] [])
-  (index-status "org.elasticsearch.action.admin.indices.status.IndicesStatusRequest" [] [])
-  (update-index-settings "org.elasticsearch.action.admin.indices.settings.UpdateSettingsRequest" [:indices] []))
+(def specs
+  {;; client
+   "org.elasticsearch.action.index.IndexRequest"
+   {:symb 'index-doc :impl :client :constructor [:index] :required [:source :type]}
+   "org.elasticsearch.action.search.SearchRequest"
+   {:symb 'search :impl :client :constructor [] :required []}
+   "org.elasticsearch.action.get.GetRequest"
+   {:symb 'get-doc :impl :client :constructor [:index] :required [:id]}
+   "org.elasticsearch.action.count.CountRequest"
+   {:symb 'count-docs :impl :client :constructor [:indices] :required []}
+   "org.elasticsearch.action.delete.DeleteRequest"
+   {:symb 'delete-doc :impl :client :constructor [:index :type :id] :required []}
+   "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest"
+   {:symb 'delete-by-query :impl :client :constructor [] :required [:query]}
+   "org.elasticsearch.action.mlt.MoreLikeThisRequest"
+   {:symb 'more-like-this :impl :client :constructor [:index] :required [:id :type]}
+   "org.elasticsearch.action.percolate.PercolateRequest"
+   {:symb 'percolate :impl :client :constructor [:index :type] :required [:source]}
+   "org.elasticsearch.action.search.SearchScrollRequest"
+   {:symb 'scroll :impl :client :constructor [:scroll-id] :required []}
+   ;; for es > 0.20
+   "org.elasticsearch.action.update.UpdateRequest"
+   {:symb 'update-doc :impl :client :constructor [:index :type :id] :required [:script]}
 
-(def-requests :cluster
-  (cluster-health "org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest" [:indices] [])
-  (cluster-state "org.elasticsearch.action.admin.cluster.state.ClusterStateRequest" [] [])
-  (node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequest" [] [])
-  (node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartRequest" [:nodes-ids] [])
-  (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids] [])
-  (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids] [])
-  (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" [] []))
+   ;; indices
+   "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest"
+   {:symb 'optimize-index :impl :indices :constructor [] :required []}
+   "org.elasticsearch.action.admin.indices.analyze.AnalyzeRequest"
+   {:symb 'analyze-request :impl :indices :constructor [:index :text] :reqired []}
+   "org.elasticsearch.action.admin.indices.cache.clear.ClearIndicesCacheRequest"
+   {:symb 'clear-index-cache :impl :indices :constructor [:indices] :required []}
+   "org.elasticsearch.action.admin.indices.close.CloseIndexRequest"
+   {:symb 'close-index :impl :indices :constructor [:index] :required []}
+   "org.elasticsearch.action.admin.indices.create.CreateIndexRequest"
+   {:symb 'create-index :impl :indices :constructor [:index] :required []}
+   "org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest"
+   {:symb 'delete-index :impl :indices :constructor [:indices] :required []}
+   "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingRequest"
+   {:symb 'delete-mapping :impl :indices :constructor [:indices] :required []}
+   "org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateRequest"
+   {:symb 'delete-template :impl :indices :constructor [:name] :required []}
+   ;; for es < 0.20
+   "org.elasticsearch.action.admin.indices.exists.IndicesExistsRequest"
+   {:symb 'exists-index :impl :indices :constructor [:indices] :required []}
+   ;; for es > 0.20
+   "org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest"
+   {:symb 'exists-index :impl :indices :constructor [:indices] :required []}
+   "org.elasticsearch.action.admin.indices.flush.FlushRequest"
+   {:symb 'flush-index :impl :indices :constructor [:indices] :required []}
+   "org.elasticsearch.action.admin.indices.gateway.snapshot.GatewaySnapshotRequest"
+   {:symb 'gateway-snapshot :impl :indices :constructor [:indices] :required []}
+   "org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest"
+   {:symb 'put-mapping :impl :indices :constructor [:indices] :required []}
+   "org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateRequest"
+   {:symb 'put-template :impl :indices :constructor [:name] :required []}
+   "org.elasticsearch.action.admin.indices.refresh.RefreshRequest"
+   {:symb 'refresh-index :impl :indices :constructor [:indices] :required []}
+   "org.elasticsearch.action.admin.indices.segments.IndicesSegmentsRequest"
+   {:symb 'index-segments :impl :indices :constructor [] :required []}
+   "org.elasticsearch.action.admin.indices.stats.IndicesStatsRequest"
+   {:symb 'index-stats :impl :indices :constructor [] :required []}
+   "org.elasticsearch.action.admin.indices.status.IndicesStatusRequest"
+   {:symb 'index-status :impl :indices :constructor [] :required []}
+   "org.elasticsearch.action.admin.indices.settings.UpdateSettingsRequest"
+   {:symb 'update-index-settings :impl :indices :constructor [:indices] :required []}
+
+   ;; cluster
+   "org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest"
+   {:symb 'cluster-health :impl :cluster :constructor [:indices] :required []}
+   "org.elasticsearch.action.admin.cluster.state.ClusterStateRequest"
+   {:symb 'cluster-state :impl :cluster :constructor [] :required []}
+   "org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequest"
+   {:symb 'node-info :impl :cluster :constructor [] :required []}
+   "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartRequest"
+   {:symb 'node-restart :impl :cluster :constructor [:nodes-ids] :required []}
+   "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest"
+   {:symb 'node-shutdown :impl :cluster :constructor [:nodes-ids] :required []}
+   "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest"
+   {:symb 'nodes-stats :impl :cluster :constructor [:nodes-ids] :required []}
+   "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest"
+   {:symb 'update-cluster-settings :impl :cluster :constructor [] :required []}})
+
+(defn-requests specs)
 
 (def base-wrapped-params-doc
   {:optional
