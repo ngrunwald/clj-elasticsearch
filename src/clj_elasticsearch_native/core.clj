@@ -1,4 +1,4 @@
-(ns clj-elasticsearch.client
+(ns clj-elasticsearch-native.core
   (:require [cheshire.core :as json]
             [clojure.string :as str]
             [gavagai.core :as gav]
@@ -485,7 +485,7 @@
 (defmacro with-client
   "uses an existing client in the body, does not close it afterward"
   [client & body]
-  `(binding [clj-elasticsearch.client/*client* ~client]
+  `(binding [clj-elasticsearch-native.core/*client* ~client]
      (do ~@body)))
 
 (defn build-document
@@ -835,11 +835,7 @@
   (doseq [[class-name {:keys [symb impl constructor required] :as spec}] specs]
     (if-let [req-fn (make-requester class-name spec)]
       (let [symb-name (vary-meta symb merge (meta req-fn))]
-        (intern 'clj-elasticsearch.client symb-name req-fn)))))
-
-(defn- map-vals
-  [f m]
-  (zipmap (keys m) (map f vals)))
+        (intern 'clj-elasticsearch-native.core symb-name req-fn)))))
 
 (defn make-rest-fns-blueprint
   [specs]

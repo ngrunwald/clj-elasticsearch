@@ -1,5 +1,5 @@
-(ns clj-elasticsearch.test.client
-  (:use [clj-elasticsearch.client] :reload-all)
+(ns clj-elasticsearch-native.test_core
+  (:use [clj-elasticsearch-native.core] :reload-all)
   (:use [clojure.test]
         [clojure.java.io]
         [cheshire.core]))
@@ -82,7 +82,7 @@
               [:_source :field1])
       ["toto" "tutu"])
   (is (re-find #":matches :version .* ?:type :index :id"
-               (:doc (meta #'clj-elasticsearch.client/index-doc))))
+               (:doc (meta #'clj-elasticsearch-native.core/index-doc))))
   (let [payload {:index "test" :type "vvv"
                  :source {:foo "bar"}
                  :id "neo"}
