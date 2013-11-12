@@ -837,37 +837,64 @@
       (let [symb-name (vary-meta symb merge (meta req-fn))]
         (intern 'clj-elasticsearch.client symb-name req-fn)))))
 
+(defn- map-vals
+  [f m]
+  (zipmap (keys m) (map f vals)))
+
 (defn make-rest-fns-blueprint
   [specs]
-  (reduce (fn [acc [class-name {:keys [symb constructor required] :as spec}]]
+  (reduce (fn [acc [class-name {:keys [symb constructor required
+                                       rest-uri rest-method rest-default] :as spec}]]
             (if-let [klass (class-for-name class-name)]
-              (assoc acc (-> symb (name) (keyword)) (request-rest-signature klass))
+              (let [signature (assoc
+                               (select-keys spec [:rest-uri :rest-method :rest-default])
+                               :params
+                               (request-rest-signature klass))
+                    clean-sig (->> signature
+                                   (remove (fn [[k v]] (#{:listener-threaded? :format} v)))
+                                   (into {}))]
+                (assoc acc (-> symb (name) (keyword)) clean-sig))
               acc))
           {} specs))
 
 (def specs
   {;; client
    "org.elasticsearch.action.index.IndexRequest"
-   {:symb 'index-doc :impl :client :constructor [:index] :required [:source :type]}
+   {:symb 'index-doc :impl :client :constructor [:index] :required [:source :type]
+    :rest-uri [:index :type :id] :rest-method :put/post}
    "org.elasticsearch.action.search.SearchRequest"
-   {:symb 'search :impl :client :constructor [] :required []}
+   {:symb 'search :impl :client :constructor [] :required []
+    :rest-uri [:indices :type "_search"] :rest-method :get
+    :rest-default {:type "_all" :indices "_all"}}
    "org.elasticsearch.action.get.GetRequest"
-   {:symb 'get-doc :impl :client :constructor [:index] :required [:id]}
+   {:symb 'get-doc :impl :client :constructor [:index] :required [:id]
+    :rest-uri [:index :type :id] :rest-method :get
+    :rest-default {:type "_all"}}
    "org.elasticsearch.action.count.CountRequest"
-   {:symb 'count-docs :impl :client :constructor [:indices] :required []}
+   {:symb 'count-docs :impl :client :constructor [:indices] :required []
+    :rest-uri [:indices :type "_search"] :rest-method :get
+    :rest-default {:type "_all" :indices "_all"}}
    "org.elasticsearch.action.delete.DeleteRequest"
-   {:symb 'delete-doc :impl :client :constructor [:index :type :id] :required []}
+   {:symb 'delete-doc :impl :client :constructor [:index :type :id] :required []
+    :rest-uri [:index :type :id] :rest-method :delete}
    "org.elasticsearch.action.deletebyquery.DeleteByQueryRequest"
-   {:symb 'delete-by-query :impl :client :constructor [] :required [:query]}
+   {:symb 'delete-by-query :impl :client :constructor [] :required [:query]
+    :rest-uri [:index :type "_query"] :rest-method :delete
+    :rest-default {:type "_all" :index "_all"}}
    "org.elasticsearch.action.mlt.MoreLikeThisRequest"
-   {:symb 'more-like-this :impl :client :constructor [:index] :required [:id :type]}
+   {:symb 'more-like-this :impl :client :constructor [:index] :required [:id :type]
+    :rest-uri [:index :type "_mlt"] :rest-method :get
+    :rest-default {:type "_all" :index "_all"}}
    "org.elasticsearch.action.percolate.PercolateRequest"
-   {:symb 'percolate :impl :client :constructor [:index :type] :required [:source]}
+   {:symb 'percolate :impl :client :constructor [:index :type] :required [:source]
+    :rest-uri [:index :type "_percolate"] :rest-method :get}
    "org.elasticsearch.action.search.SearchScrollRequest"
-   {:symb 'scroll :impl :client :constructor [:scroll-id] :required []}
+   {:symb 'scroll :impl :client :constructor [:scroll-id] :required []
+    :rest-uri [:index :type "_search" "scroll"] :rest-method :get}
    ;; for es > 0.20
    "org.elasticsearch.action.update.UpdateRequest"
-   {:symb 'update-doc :impl :client :constructor [:index :type :id] :required [:script]}
+   {:symb 'update-doc :impl :client :constructor [:index :type :id] :required []
+    :rest-uri [:index :type :id "_update"] :rest-method :post}
 
    ;; indices
    "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest"
