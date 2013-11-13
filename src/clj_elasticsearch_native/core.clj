@@ -401,6 +401,8 @@
                       (getResponseHandler this)
                       (getResponseHandler listener))}))))
 
+(defn make-listener [arg] (specs/make-listener :node arg))
+
 (defn make-es-future
   [^ActionFuture action-future {:keys [format async-callback]
                                 :or {async-callback identity
