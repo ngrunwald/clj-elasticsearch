@@ -6,7 +6,7 @@
                  [gavagai "0.3.1"]]
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
-  :profiles {:dev {:dependencies [[org.elasticsearch/elasticsearch "0.20.5"]]}
+  :profiles {:dev {:dependencies [[org.elasticsearch/elasticsearch "0.90.7"]]}
              :0.20 {:dependencies [[org.elasticsearch/elasticsearch "0.20.0"]]}
              :0.19 {:dependencies [[org.elasticsearch/elasticsearch "0.19.0"]]}}
   :url "https://github.com/ngrunwald/clj-elasticsearch"
