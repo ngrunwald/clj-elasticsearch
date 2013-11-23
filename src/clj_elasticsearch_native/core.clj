@@ -216,9 +216,7 @@
   [enum]
   (-> enum
    (str)
-   (str/lower-case)
-   (str/replace #"_" "-")
-   (keyword)))
+   (str/lower-case)))
 
 (defn make-enum-tables*
   [^Class t]

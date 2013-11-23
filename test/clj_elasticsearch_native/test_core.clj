@@ -45,7 +45,7 @@
                        :id "mid"})))
   (is (> (:successful-shards (refresh-index {:indices ["test"]})) 0))
   (is (true? (:exists? (exists-index {:indices ["test"]}))))
-  (is (keyword? (:status (cluster-health {:indices ["test"]}))))
+  (is (string? (:status (cluster-health {:indices ["test"]}))))
   (is (= 1 (:count (count-docs {:indices ["test"]}))))
   (let [c (atom nil)
         l (make-listener {:on-response (fn [r] (reset! c (:count r)))
