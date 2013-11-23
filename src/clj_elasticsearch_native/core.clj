@@ -360,7 +360,8 @@
   [^Method method]
   (let [name (.getName method)
         parameter (first (seq (.getParameterTypes method)))
-        conv (if-not (#{"get" "set" "is"} name)
+        conv (if (and (not (#{"get" "set" "is"} name))
+                      (re-find #"^(get|set|is)[A-Z]" name))
                (str/replace name #"^set|^get|^is" "")
                name)
         conv (str/lower-case (str/replace conv #"(\p{Lower})(\p{Upper})" "$1-$2"))
