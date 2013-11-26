@@ -142,8 +142,8 @@
                   (.getMethod FastByteArrayOutputStream "bytes" (make-array Class 0))
                   (catch NoSuchMethodException _ nil))]
     (if new-met
-      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.. os bytes toBytes) true))
-      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.underlyingBytes os) true)))))
+      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.. os bytes toBytes) specs/parse-json-key))
+      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.underlyingBytes os) specs/parse-json-key)))))
 
 (def compatible-decode-smile (make-compatible-decode-smile))
 
