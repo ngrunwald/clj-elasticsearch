@@ -9,7 +9,6 @@
            [org.elasticsearch.common.settings ImmutableSettings ImmutableSettings$Builder]
            [org.elasticsearch.action.admin.indices.status IndicesStatusRequest]
            [org.elasticsearch.action ActionFuture]
-           [org.elasticsearch.common.io FastByteArrayOutputStream]
            [org.elasticsearch.client.transport TransportClient]
            [org.elasticsearch.client.support AbstractClient]
            [org.elasticsearch.node Node]
@@ -25,6 +24,13 @@
   (:use [clojure.pprint :only [cl-format]]))
 
 (def ^{:dynamic true} *client*)
+
+(defn class-for-name
+  [class-name]
+  (try
+    (Class/forName class-name)
+    (catch ClassNotFoundException _
+      nil)))
 
 (defprotocol FromSource
   (convert-source [this] "convert source to bytes"))
@@ -135,15 +141,25 @@
     :smile (XContentFactory/smileBuilder)
     (XContentFactory/smileBuilder)))
 
-(defn- make-compatible-decode-smile
+(defmacro make-compatible-decode-smile
   "produces a fn for backward compatibility with old es version"
   []
-  (let [new-met (try
-                  (.getMethod FastByteArrayOutputStream "bytes" (make-array Class 0))
-                  (catch NoSuchMethodException _ nil))]
-    (if new-met
-      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.. os bytes toBytes) specs/parse-json-key))
-      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.underlyingBytes os) specs/parse-json-key)))))
+  (let [old-class (class-for-name
+                   "org.elasticsearch.common.io.FastByteArrayOutputStream")]
+    (if old-class
+      (let [new-met (try
+                      (.getMethod
+                       (class-for-name
+                        "org.elasticsearch.common.io.FastByteArrayOutputStream")
+                       "bytes" (make-array Class 0))
+                      (catch NoSuchMethodException _ nil))]
+        (if new-met
+          `(fn [^org.elasticsearch.common.io.FastByteArrayOutputStream os#]
+             (json/decode-smile (.. os# bytes toBytes) specs/parse-json-key))
+          `(fn [^org.elasticsearch.common.io.FastByteArrayOutputStream os#]
+             (json/decode-smile (.underlyingBytes os#) specs/parse-json-key))))
+      `(fn [^org.elasticsearch.common.io.stream.BytesStreamOutput os#]
+         (json/decode-smile (.. os# bytes toBytes) specs/parse-json-key)))))
 
 (def compatible-decode-smile (make-compatible-decode-smile))
 
@@ -433,13 +449,6 @@
     (actionGet [this ^org.elasticsearch.common.unit.TimeValue tv]
       (.actionGet action-future tv))
     (getRootFailure [this] (.getRootFailure action-future))))
-
-(defn class-for-name
-  [class-name]
-  (try
-    (Class/forName class-name)
-    (catch ClassNotFoundException _
-      nil)))
 
 (defprotocol PClosable
   (close [this] "closes this Elasticsearch client and any underlying infrastructure"))
