@@ -489,13 +489,15 @@
   (-> client (getClient) (.admin) (.cluster)))
 
 (defn- is-settable-method?
-  [^Class klass ^Method method]
+  [^Class klass ^Method method req-args]
   (let [return (.getReturnType method)
         super (.getSuperclass klass)
         allowed #{klass super}
         parameters (.getParameterTypes method)
         nb-params (alength parameters)]
-    (and (allowed return) (= nb-params 1))))
+    (and (or (allowed return)
+             (get (set req-args) (keyword (method->arg method))))
+         (= nb-params 1))))
 
 (defn- get-executable-methods
   [^Class klass methods]
@@ -551,9 +553,9 @@
     {:method method :mapper identity :doc (clean-class-name klass)})))
 
 (defn- get-settable-methods
-  [^Class klass]
+  [^Class klass req-args]
   (let [methods (.getMethods klass)
-        settable (filter #(is-settable-method? klass %) (seq methods))
+        settable (filter #(is-settable-method? klass % req-args) (seq methods))
         by-name (group-by (fn [^Method m] (.getName m)) settable)]
     (for [[n ms] by-name]
       (if (= 1 (count ms))
@@ -633,8 +635,8 @@
          (.invoke async client (into-array Object (list request listener)))))))
 
 (defn- request-signature
-  [^Class klass]
-  (let [methods (get-settable-methods klass)
+  [^Class klass req-args]
+  (let [methods (get-settable-methods klass req-args)
         fns (for [{:keys [^Method method mapper doc]} methods]
               (let [m-name (-> method (method->arg) (keyword))]
                 [m-name
@@ -645,7 +647,10 @@
                         (.invoke method obj (into-array Object
                                                         (list (mapper arg)))))))
                   merge {::type-doc doc})]))]
-    (into {} fns)))
+    (let [result (into {} fns)]
+      (prn klass (keys result))
+      (println)
+      result)))
 
 (defn select-vals
   [h ks]
@@ -720,7 +725,7 @@
   [client-type request-class-name cst-args req-args]
   (if-let [r-klass (class-for-name request-class-name)]
     (if-let [c-klass (get client-types client-type)]
-      (let [sig (request-signature r-klass)
+      (let [sig (request-signature r-klass req-args)
             all-args (keys sig)
             setters (vals sig)
             get-client-fn (case client-type
@@ -810,7 +815,7 @@
   (percolate "org.elasticsearch.action.percolate.PercolateRequest" [:index :type] [:source])
   (scroll "org.elasticsearch.action.search.SearchScrollRequest" [:scroll-id] [])
   ;; for es > 0.20
-  (update-doc "org.elasticsearch.action.update.UpdateRequest" [:index :type :id] [:script]))
+  (update-doc "org.elasticsearch.action.update.UpdateRequest" [:index :type :id] [:script :doc-as-upsert?]))
 
 (def-requests :indices
   (optimize-index "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest" [] [])

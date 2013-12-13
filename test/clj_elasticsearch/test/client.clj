@@ -59,7 +59,7 @@
     (is (realized? ft))
     (is (not (future-cancelled? ft))))
   (let [status (index-status {:indices ["test"]})]
-    (is (=  1 (get-in status [:indices :test :docs :num_docs]))))
+    (is (= 1 (get-in status [:indices :test :docs :num_docs]))))
   (let [d (get-doc {:index "test" :type "tyu" :id "mid" :fields ["field1" "field2" :field3]})]
     (is (nil? (:_source d)))
     (is (= {:tyu {:foo "bar"}} (get-in d [:fields :field3])))
@@ -94,10 +94,17 @@
                                        (assoc o :bar "baz"))
                                      {:index "test" :type "vvv" :id "neo"})
         _ (atomic-update-from-source (fn [_] {:foo "bar"}) {:index "test" :type "vvv" :id "geo"})]
-    (is {:foo "bar" :bar "baz" :ooh "sneaky"}
-        (:_source (get-doc {:index "test" :type "vvv" :id "neo"})))
-    (is {:foo "bar"}
-        (:_source (get-doc {:index "test" :type "vvv" :id "geo"})))
+    (is (= {:foo "bar" :bar "baz"}
+           (:_source (get-doc {:index "test" :type "vvv" :id "neo"}))))
+    (is (= {:foo "bar"}
+           (:_source (get-doc {:index "test" :type "vvv" :id "geo"}))))
     (is (not (empty? (get (get-mapping {}) "test"))))
     (is (not (empty? (get @(get-mapping {:async? true}) "test"))))
-    (is (empty? (get (get-mapping {:types ["wrong"]}) "test")))))
+    (is (empty? (get (get-mapping {:types ["wrong"]}) "test"))))
+
+  (let [payload {:index "test" :type "abc"
+                 :doc {:new "source"}
+                 :id "upserted"}]
+    (update-doc (assoc payload :doc-as-upsert? true))
+    (is (= {:new "source"}
+           (:_source (get-doc {:index "test" :type "abc" :id "upserted"}))))))
