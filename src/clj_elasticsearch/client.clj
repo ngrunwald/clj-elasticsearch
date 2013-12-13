@@ -647,10 +647,7 @@
                         (.invoke method obj (into-array Object
                                                         (list (mapper arg)))))))
                   merge {::type-doc doc})]))]
-    (let [result (into {} fns)]
-      (prn klass (keys result))
-      (println)
-      result)))
+    (into {} fns)))
 
 (defn select-vals
   [h ks]
