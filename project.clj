@@ -1,4 +1,4 @@
-(defproject org.clojars.touch/clj-elasticsearch "0.4.1"
+(defproject org.clojars.touch/clj-elasticsearch "0.4.2"
   :description "Native Java API client wrapper for Elasticsearch"
   :dependencies [[org.clojure/clojure "1.5.1"]
                  [cheshire "5.2.0"]
