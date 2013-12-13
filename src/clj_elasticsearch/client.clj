@@ -8,7 +8,7 @@
            [org.elasticsearch.common.settings ImmutableSettings ImmutableSettings$Builder]
            [org.elasticsearch.action.admin.indices.status IndicesStatusRequest]
            [org.elasticsearch.action ActionFuture]
-           [org.elasticsearch.common.io FastByteArrayOutputStream]
+           [org.elasticsearch.common.io.stream BytesStreamOutput]
            [org.elasticsearch.client.transport TransportClient]
            [org.elasticsearch.client.support AbstractClient]
            [org.elasticsearch.node Node]
@@ -134,18 +134,6 @@
     :smile (XContentFactory/smileBuilder)
     (XContentFactory/smileBuilder)))
 
-(defn- make-compatible-decode-smile
-  "produces a fn for backward compatibility with old es version"
-  []
-  (let [new-met (try
-                  (.getMethod FastByteArrayOutputStream "bytes" (make-array Class 0))
-                  (catch NoSuchMethodException _ nil))]
-    (if new-met
-      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.. os bytes toBytes) true))
-      (fn [^FastByteArrayOutputStream os] (json/decode-smile (.underlyingBytes os) true)))))
-
-(def compatible-decode-smile (make-compatible-decode-smile))
-
 (defn- convert-source-result
   [src]
   (cond
@@ -159,17 +147,17 @@
 (defn- convert-fields
   [^java.util.HashMap hm]
   (into {} (map (fn [^org.elasticsearch.index.get.GetField f]
-                  [(keyword (.getName f)) (convert-source-result (.getValue f))]) (.values hm))))
+                  [(keyword (.getName f)) (convert-source-result (if (>= 1 (count (.getValues f))) (.getValue f) #_else (.getValues f)))]) (.values hm))))
 
 (defn- convert-get
   [_ ^org.elasticsearch.action.get.GetResponse response _]
-  (let [data (if (.exists response)
+  (let [data (if (.isExists response)
                {:_index (.getIndex response)
                 :_type (.getType response)
                 :_id (.getId response)
                 :_version (.getVersion response)})
         data (if-not (.isSourceEmpty response)
-               (assoc data :_source (convert-source-result (.sourceAsMap response)))
+               (assoc data :_source (convert-source-result (.getSourceAsMap response)))
                data)
         data (let [fields (.getFields response)]
                (if-not (empty? fields)
@@ -188,7 +176,7 @@
 
 (defn- convert-xcontent
   [^org.elasticsearch.common.xcontent.ToXContent response empty-params]
-  (let [os (FastByteArrayOutputStream.)
+  (let [os (BytesStreamOutput.)
         builder (if (= format :json)
                   (XContentFactory/jsonBuilder os)
                   (XContentFactory/smileBuilder os))]
@@ -196,7 +184,7 @@
     (.toXContent response builder empty-params)
     (.endObject builder)
     (.flush builder)
-    (compatible-decode-smile os)))
+    (json/decode-smile (.. os bytes toBytes) true)))
 
 (defn- make-xconverter
   [class-name]
@@ -289,9 +277,6 @@
               ["org.elasticsearch.cluster.routing.RoutingNodes" :exclude [:blocks]]
               ["org.elasticsearch.cluster.routing.IndexRoutingTable"]
               ["org.elasticsearch.action.admin.cluster.node.stats.NodeStats"]
-              ;; for es < 0.20
-              ["org.elasticsearch.action.admin.indices.exists.IndicesExistsResponse"
-               :throw? false]
               ;; for es > 0.20
               ["org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse"
                :throw? false]
@@ -341,7 +326,7 @@
                  "org.elasticsearch.action.admin.indices.segments.IndicesSegmentResponse"
                  "org.elasticsearch.action.admin.indices.status.IndicesStatusResponse"
                  "org.elasticsearch.action.admin.indices.stats.CommonStats"
-                 "org.elasticsearch.action.admin.indices.stats.IndicesStats"
+                 "org.elasticsearch.action.admin.indices.stats.IndicesStatsResponse"
                  "org.elasticsearch.indices.NodeIndicesStats"
                  "org.elasticsearch.common.xcontent.ToXContent"])))
 
@@ -504,13 +489,15 @@
   (-> client (getClient) (.admin) (.cluster)))
 
 (defn- is-settable-method?
-  [^Class klass ^Method method]
+  [^Class klass ^Method method req-args]
   (let [return (.getReturnType method)
         super (.getSuperclass klass)
         allowed #{klass super}
         parameters (.getParameterTypes method)
         nb-params (alength parameters)]
-    (and (allowed return) (= nb-params 1))))
+    (and (or (allowed return)
+             (get (set req-args) (keyword (method->arg method))))
+         (= nb-params 1))))
 
 (defn- get-executable-methods
   [^Class klass methods]
@@ -566,9 +553,9 @@
     {:method method :mapper identity :doc (clean-class-name klass)})))
 
 (defn- get-settable-methods
-  [^Class klass]
+  [^Class klass req-args]
   (let [methods (.getMethods klass)
-        settable (filter #(is-settable-method? klass %) (seq methods))
+        settable (filter #(is-settable-method? klass % req-args) (seq methods))
         by-name (group-by (fn [^Method m] (.getName m)) settable)]
     (for [[n ms] by-name]
       (if (= 1 (count ms))
@@ -648,8 +635,8 @@
          (.invoke async client (into-array Object (list request listener)))))))
 
 (defn- request-signature
-  [^Class klass]
-  (let [methods (get-settable-methods klass)
+  [^Class klass req-args]
+  (let [methods (get-settable-methods klass req-args)
         fns (for [{:keys [^Method method mapper doc]} methods]
               (let [m-name (-> method (method->arg) (keyword))]
                 [m-name
@@ -735,7 +722,7 @@
   [client-type request-class-name cst-args req-args]
   (if-let [r-klass (class-for-name request-class-name)]
     (if-let [c-klass (get client-types client-type)]
-      (let [sig (request-signature r-klass)
+      (let [sig (request-signature r-klass req-args)
             all-args (keys sig)
             setters (vals sig)
             get-client-fn (case client-type
@@ -825,7 +812,7 @@
   (percolate "org.elasticsearch.action.percolate.PercolateRequest" [:index :type] [:source])
   (scroll "org.elasticsearch.action.search.SearchScrollRequest" [:scroll-id] [])
   ;; for es > 0.20
-  (update-doc "org.elasticsearch.action.update.UpdateRequest" [:index :type :id] [:script]))
+  (update-doc "org.elasticsearch.action.update.UpdateRequest" [:index :type :id] [:script :doc-as-upsert?]))
 
 (def-requests :indices
   (optimize-index "org.elasticsearch.action.admin.indices.optimize.OptimizeRequest" [] [])
@@ -836,8 +823,6 @@
   (delete-index "org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest" [:indices] [])
   (delete-mapping "org.elasticsearch.action.admin.indices.mapping.delete.DeleteMappingRequest" [:indices] [])
   (delete-template "org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateRequest" [:name] [])
-  ;; for es < 0.20
-  (exists-index "org.elasticsearch.action.admin.indices.exists.IndicesExistsRequest" [:indices] [])
   ;; for es > 0.20
   (exists-index "org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest" [:indices] [])
   (flush-index "org.elasticsearch.action.admin.indices.flush.FlushRequest" [:indices] [])
@@ -856,7 +841,8 @@
   (node-info "org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequest" [] [])
   (node-restart "org.elasticsearch.action.admin.cluster.node.restart.NodesRestartRequest" [:nodes-ids] [])
   (node-shutdown "org.elasticsearch.action.admin.cluster.node.shutdown.NodesShutdownRequest" [:nodes-ids] [])
-  (nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids] [])
+  ;;; Method signature problem with method indices from class class org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest {:class org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest, :method "indices", :types #{boolean org.elasticsearch.action.admin.indices.stats.CommonStatsFlags}, :count 2, :all-methods [#<Method public org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest.indices(boolean)> #<Method public org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest.indices(org.elasticsearch.action.admin.indices.stats.CommonStatsFlags)>]}
+  ;(nodes-stats "org.elasticsearch.action.admin.cluster.node.stats.NodesStatsRequest" [:nodes-ids] [])
   (update-cluster-settings "org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest" [] []))
 
 (def base-wrapped-params-doc
