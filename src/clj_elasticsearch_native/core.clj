@@ -823,12 +823,15 @@
 
 (defn make-implementation!
   [specs]
-  (reduce (fn [acc [class-name {:keys [symb impl constructor required] :as spec}]]
-            (if-let [req-fn (make-requester class-name spec)]
-              (let [name-kw (-> symb (name) (keyword))
-                    symb-name (vary-meta symb merge (meta req-fn))]
-                (intern 'clj-elasticsearch-native.core symb-name req-fn)
-                (assoc acc name-kw req-fn))
+  (reduce (fn [acc [class-name {:keys [symb impl constructor required native-impl]
+                                :or {native-impl true} :as spec}]]
+            (if native-impl
+              (if-let [req-fn (make-requester class-name spec)]
+               (let [name-kw (-> symb (name) (keyword))
+                     symb-name (vary-meta symb merge (meta req-fn))]
+                 (intern 'clj-elasticsearch-native.core symb-name req-fn)
+                 (assoc acc name-kw req-fn))
+               acc)
               acc))
           {} specs))
 
