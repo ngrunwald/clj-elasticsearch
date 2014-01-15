@@ -163,6 +163,19 @@
 
 (def compatible-decode-smile (make-compatible-decode-smile))
 
+(defmacro make-compatible-output-stream
+  "produces a fn for generating a correct output stream"
+  []
+  (let [old-class (class-for-name
+                      "org.elasticsearch.common.io.FastByteArrayOutputStream")]
+    (if old-class
+      `(fn ^org.elasticsearch.common.io.FastByteArrayOutputStream []
+         (org.elasticsearch.common.io.FastByteArrayOutputStream.))
+      `(fn ^org.elasticsearch.common.io.stream.BytesStreamOutput []
+         (org.elasticsearch.common.io.stream.BytesStreamOutput.)))))
+
+(def compatible-output-stream (make-compatible-output-stream))
+
 (defn- convert-source-result
   [src]
   (cond
@@ -205,7 +218,7 @@
 
 (defn- convert-xcontent
   [^org.elasticsearch.common.xcontent.ToXContent response empty-params]
-  (let [os (FastByteArrayOutputStream.)
+  (let [os (compatible-output-stream)
         builder (if (= format :json)
                   (XContentFactory/jsonBuilder os)
                   (XContentFactory/smileBuilder os))]
@@ -356,7 +369,7 @@
                  "org.elasticsearch.action.admin.indices.segments.IndicesSegmentResponse"
                  "org.elasticsearch.action.admin.indices.status.IndicesStatusResponse"
                  "org.elasticsearch.action.admin.indices.stats.CommonStats"
-                 "org.elasticsearch.action.admin.indices.stats.IndicesStats"
+                 ;; "org.elasticsearch.action.admin.indices.stats.IndicesStats"
                  "org.elasticsearch.indices.NodeIndicesStats"
                  "org.elasticsearch.common.xcontent.ToXContent"])))
 
